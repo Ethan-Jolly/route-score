@@ -1,0 +1,11 @@
+node_modules
+.next
+out
+.env
+.env.local
+.vercel
+*.tsbuildinfo
+next-env.d.ts
+
+# Claude Code personal settings (permission allowlist, machine-specific)
+.claude/settings.local.json
