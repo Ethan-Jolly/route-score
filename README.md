@@ -154,11 +154,13 @@ month) as the 12-month window slides.
 
 ### Backfill cron
 
-`vercel.json` also schedules `GET /api/cron/backfill` (`15,45 1-4 * * *`) for
-ongoing top-up — a small `?calls=` budget per run that fits inside
-`maxDuration`. Sub-daily crons require the **Vercel Pro** plan; on Hobby, reduce
-it to a single daily entry and rely on `npm run backfill` for the heavy initial
-fill. It shares `CRON_SECRET` with the warm job for auth.
+`vercel.json` also schedules `GET /api/cron/backfill` (`0 2 * * *`, daily at
+02:00 UTC) for ongoing top-up — a small `?calls=` budget per run that fits
+inside `maxDuration`. This is set to once daily to stay within the **Vercel
+Hobby** limit (crons run at most once per day); the heavy initial fill is done
+with `npm run backfill` locally. On **Pro** you can run it far more often (e.g.
+`15,45 1-4 * * *`) so steady-state upkeep keeps pace on its own. It shares
+`CRON_SECRET` with the warm job for auth.
 
 ## Deploying to Vercel
 

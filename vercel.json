@@ -7,7 +7,7 @@
     },
     {
       "path": "/api/cron/backfill",
-      "schedule": "15,45 1-4 * * *"
+      "schedule": "0 2 * * *"
     }
   ]
 }
