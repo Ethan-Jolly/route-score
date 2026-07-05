@@ -81,9 +81,11 @@ Trend arrow compares the latest 3-month moving average against the previous one
 | `/` | Homepage: search + example score cards (served from cache, fast path) |
 | `/route/BTN-LBG?band=am-peak` | Full dashboard (band tabs, breakdown, trend, context) |
 | `/score/BTN-LBG-am-peak` | Shareable score card, ISR-cached daily, with a dynamically rendered Open Graph image so pasted links preview as the card itself |
+| `/leaderboard` | Best/worst routes, toggleable between the whole UK and London only (see below) |
 | `/api/route-score?from=BTN&to=LBG&band=am-peak` | JSON API |
 | `/api/stations?q=brig` | Station search API (autocomplete also runs client-side) |
-| `/api/cron/warm` | Nightly job (see below) |
+| `/api/cron/warm` | Nightly warm job (see below) |
+| `/api/cron/backfill` | Leaderboard backfill job (see below) |
 
 Routes with no direct trains return a friendly "no direct service" page, not an
 error — Route Score rates direct journeys only.
@@ -98,6 +100,65 @@ stay current and returning visitors never hit a cold fetch.
 Protect it in production by setting **`CRON_SECRET`** — Vercel Cron sends it as
 `Authorization: Bearer …`; the endpoint rejects mismatches. Locally (no secret
 set) it's open so you can hit it directly.
+
+## Leaderboard & backfill
+
+`/leaderboard` ranks the best and worst-performing routes, toggleable between
+the whole UK and London-only. Rankings are drawn from a **curated universe** of
+~1,000 real routes in `lib/routes.ts` (every London terminal against the real
+destinations on its lines, plus the major UK intercity city pairs, both
+directions). All use the `all-day` band so scores are directly comparable, and
+a route needs ≥6 cached months of real service to appear.
+
+We can't fetch all ~6.7M station pairs from HSP, so the leaderboard and the warm
+cache are seeded from this set by the **backfill job**. It's fully resumable:
+each run recomputes what's still missing and fetches only that, persisting every
+wave, so you can stop and restart it freely. Because HSP has a sustained session
+rate limit (see below), a run stops early and reports `throttled: true` the
+moment a whole wave of calls fails.
+
+### Running the backfill
+
+The one-time populate is best driven locally. With the dev server running in one
+terminal (`npm run dev`), run the driver in another:
+
+```bash
+npm run backfill
+```
+
+It loops the endpoint a few HSP calls at a time, pausing between requests and
+backing off ~10 min whenever HSP throttles, until every route is warmed. Options
+(all optional):
+
+```bash
+node scripts/backfill.mjs \
+  --url=http://localhost:3000 \  # target server (default localhost:3000)
+  --calls=9 \                    # HSP calls per request (server clamps to 60)
+  --pause=5 \                    # seconds between requests
+  --backoff=600                  # seconds to wait after a throttle
+```
+
+To backfill a deployed instance instead, point `--url` at it and export
+`CRON_SECRET` to match the server (sent as `Authorization: Bearer …`):
+
+```bash
+CRON_SECRET=... node scripts/backfill.mjs --url=https://your-app.vercel.app
+```
+
+**Scale & pacing.** ~1,000 routes × ~12 months ≈ 12k HSP calls. At HSP's
+~15–25s per call under its concurrency cap (~3–4) and sustained session quota,
+the full first backfill runs over **days to a couple of weeks** — but it's
+resumable and the leaderboard starts filling as soon as any route reaches 6
+months. Steady-state upkeep afterward is tiny (one new month per route per
+month) as the 12-month window slides.
+
+### Backfill cron
+
+`vercel.json` also schedules `GET /api/cron/backfill` (`15,45 1-4 * * *`) for
+ongoing top-up — a small `?calls=` budget per run that fits inside
+`maxDuration`. Sub-daily crons require the **Vercel Pro** plan; on Hobby, reduce
+it to a single daily entry and rely on `npm run backfill` for the heavy initial
+fill. It shares `CRON_SECRET` with the warm job for auth.
 
 ## Deploying to Vercel
 
@@ -147,3 +208,6 @@ node scripts/build-stations.mjs
 
 - `node scripts/db-test.mjs` — verify the Neon connection.
 - `node scripts/build-stations.mjs` — regenerate the station list.
+- `npm run backfill` (`scripts/backfill.mjs`) — warm the leaderboard cache (see above).
+- `npm run validate:routes` (`scripts/validate-routes.mjs`) — check every CRS in
+  the curated route universe exists in `stations.json`.
