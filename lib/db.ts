@@ -157,6 +157,31 @@ export async function upsertMonths(
   );
 }
 
+/**
+ * How many of the given months are cached for each route in a band, keyed
+ * `"FROM>TO"`. Used by the backfill to find routes that still need warming
+ * without a per-route round-trip. Counts noService rows too (they're "done").
+ */
+export async function getRouteMonthCounts(
+  band: TimeBand,
+  months: string[]
+): Promise<Map<string, number>> {
+  const sql = db();
+  const rows = (await withRetry(
+    () => sql`
+      SELECT from_crs, to_crs, COUNT(*) AS n
+      FROM monthly_metrics
+      WHERE band = ${band} AND month = ANY(${months})
+      GROUP BY from_crs, to_crs
+    `
+  )) as Record<string, unknown>[];
+  const out = new Map<string, number>();
+  for (const r of rows) {
+    out.set(`${r.from_crs as string}>${r.to_crs as string}`, Number(r.n));
+  }
+  return out;
+}
+
 /** Fire-and-forget popularity counter used to drive cron pre-warming. */
 export async function recordLookup(
   from: string,
@@ -180,6 +205,60 @@ export interface PopularRoute {
   to: string;
   band: TimeBand;
   lookups: number;
+}
+
+/** One route's period-aggregate performance, ready for scoring/ranking. */
+export interface RouteAggregate {
+  from: string;
+  to: string;
+  band: TimeBand;
+  onTimePct: number;
+  reliabilityPct: number;
+  avgDelayMins: number;
+  totalTrains: number;
+  months: number;
+}
+
+/**
+ * Train-weighted aggregate of every cached route for a band, for the
+ * leaderboard. Only real HSP data with actual service is considered, and a
+ * route needs `minMonths` of coverage to qualify (so a single freshly-warmed
+ * month can't top the board). Scoring/ranking happens in TS via compositeScore.
+ */
+export async function getRouteAggregates(
+  band: TimeBand,
+  minMonths = 6
+): Promise<RouteAggregate[]> {
+  const sql = db();
+  const rows = (await withRetry(
+    () => sql`
+      SELECT
+        from_crs,
+        to_crs,
+        SUM(total_trains)                                            AS total_trains,
+        SUM(on_time_pct     * total_trains) / SUM(total_trains)      AS on_time_pct,
+        SUM(reliability_pct * total_trains) / SUM(total_trains)      AS reliability_pct,
+        SUM(avg_delay_mins  * total_trains) / SUM(total_trains)      AS avg_delay_mins,
+        COUNT(*)                                                     AS months
+      FROM monthly_metrics
+      WHERE band = ${band}
+        AND source = 'hsp'
+        AND no_service = FALSE
+        AND total_trains > 0
+      GROUP BY from_crs, to_crs
+      HAVING COUNT(*) >= ${minMonths} AND SUM(total_trains) > 0
+    `
+  )) as Record<string, unknown>[];
+  return rows.map((r) => ({
+    from: r.from_crs as string,
+    to: r.to_crs as string,
+    band,
+    onTimePct: Number(r.on_time_pct),
+    reliabilityPct: Number(r.reliability_pct),
+    avgDelayMins: Number(r.avg_delay_mins),
+    totalTrains: Number(r.total_trains),
+    months: Number(r.months),
+  }));
 }
 
 export async function getPopularRoutes(limit = 50): Promise<PopularRoute[]> {

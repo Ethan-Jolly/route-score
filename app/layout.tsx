@@ -36,9 +36,17 @@ export default function RootLayout({
                 Route Score
               </span>
             </Link>
-            <span className="text-xs text-slate-400 hidden sm:block">
-              UK rail performance, one number
-            </span>
+            <nav className="flex items-center gap-4 text-sm">
+              <Link
+                href="/leaderboard"
+                className="font-medium text-slate-600 hover:text-emerald-600 transition-colors"
+              >
+                Leaderboard
+              </Link>
+              <span className="text-xs text-slate-400 hidden sm:block">
+                UK rail performance, one number
+              </span>
+            </nav>
           </div>
         </header>
         <main className="flex-1">{children}</main>

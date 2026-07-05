@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { StationSearch } from "@/components/StationSearch";
 import { MiniScoreCard } from "@/components/MiniScoreCard";
 import { getCachedRouteScore } from "@/lib/provider";
@@ -59,6 +60,29 @@ export default async function HomePage() {
           </div>
         </section>
       )}
+
+      <section className="pb-16">
+        <Link
+          href="/leaderboard"
+          className="group flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-900 to-slate-800 p-6 text-white shadow-sm hover:shadow-md transition-all"
+        >
+          <span>
+            <span className="block text-lg font-semibold">
+              See the leaderboard
+            </span>
+            <span className="mt-1 block text-sm text-slate-300">
+              The best and worst-rated routes across the UK — and London on its
+              own. Find out where your line ranks.
+            </span>
+          </span>
+          <span
+            className="text-2xl text-slate-400 group-hover:text-emerald-400 transition-colors"
+            aria-hidden
+          >
+            →
+          </span>
+        </Link>
+      </section>
 
       <section className="pb-20 grid gap-6 sm:grid-cols-3 text-sm">
         <div>
