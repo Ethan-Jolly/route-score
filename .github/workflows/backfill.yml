@@ -1,0 +1,34 @@
+name: Route Score backfill
+
+# Runs the leaderboard/warm backfill more often than Vercel Hobby's once-a-day
+# cron allows. The heavy lifting still happens inside the Vercel function
+# (maxDuration 60s); this just pokes the endpoint on a schedule. HSP's own
+# session rate limit is the real ceiling, so every 30 min is a sensible pace —
+# going faster mostly burns invocations on `throttled: true` responses.
+
+on:
+  schedule:
+    - cron: "*/30 * * * *" # every 30 min (GitHub honors a ~5 min minimum, best-effort timing)
+  workflow_dispatch: {} # allows manual runs from the Actions tab
+
+# Don't let a slow run overlap the next scheduled one.
+concurrency:
+  group: route-score-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit backfill endpoint
+        env:
+          # Set in repo Settings → Secrets and variables → Actions.
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          # ↓↓↓ Change this if your production alias isn't route-score.vercel.app ↓↓↓
+          APP_URL: https://route-score.vercel.app
+        run: |
+          echo "Backfill @ $(date -u)"
+          curl -fsS -m 70 \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL}/api/cron/backfill?calls=9"
+          echo   # trailing newline after the JSON response
