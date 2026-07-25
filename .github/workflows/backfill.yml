@@ -28,7 +28,9 @@ jobs:
           APP_URL: https://route-score.vercel.app
         run: |
           echo "Backfill @ $(date -u)"
+          # calls=6 → 2 HSP waves (~50s), stays under the function's 60s
+          # maxDuration. calls=9 (3 waves) overruns it and Vercel returns 504.
           curl -fsS -m 70 \
             -H "Authorization: Bearer ${CRON_SECRET}" \
-            "${APP_URL}/api/cron/backfill?calls=9"
+            "${APP_URL}/api/cron/backfill?calls=6"
           echo   # trailing newline after the JSON response
