@@ -162,6 +162,12 @@ with `npm run backfill` locally. On **Pro** you can run it far more often (e.g.
 `15,45 1-4 * * *`) so steady-state upkeep keeps pace on its own. It shares
 `CRON_SECRET` with the warm job for auth.
 
+`.github/workflows/backfill.yml` pokes the same endpoint every 30 min from
+GitHub Actions to get around the Hobby once-a-day limit. It uses `?calls=3`
+(one HSP wave, ~25s) to stay well inside the 60s `maxDuration`, and treats a
+504 as a warning rather than a failure — each wave is persisted before the
+timeout, so the next run just resumes.
+
 ## Deploying to Vercel
 
 1. **Push to GitHub.** From the project root:
