@@ -109,20 +109,24 @@ ingest shows up red in GitHub Actions instead of passing silently.
 
 ### Scheduled ingest (GitHub Actions)
 
-`.github/workflows/ingest.yml` runs the ingest daily for 50 minutes. Add these
-repository secrets (Settings → Secrets and variables → Actions): `HSP_EMAIL`,
-`HSP_PASSWORD`, `DATABASE_URL`.
+`.github/workflows/ingest.yml` runs the ingest every 6 hours for up to 5 hours,
+at 2 concurrent HSP calls (the live site keeps the account's other 2). Add
+these repository secrets (Settings → Secrets and variables → Actions):
+`HSP_EMAIL`, `HSP_PASSWORD`, `DATABASE_URL`.
 
-A private repo gets 2,000 free Actions minutes a month; one 50-minute run a day
-uses about 1,600. You can start a longer run by hand from the Actions tab
-(`minutes` input, up to ~340).
+That schedule relies on the repo being **public**, where Actions minutes are
+free. A private repo gets 2,000 free minutes a month — about one 50-minute run
+a day — so cut the schedule back if the repo goes private. GitHub also pauses
+scheduled workflows in a public repo after 60 days without a commit; re-enable
+it from the Actions tab. You can start a run by hand there too (`minutes`
+input, up to ~340).
 
 **Scale.** The curated universe is ~1,000 routes × 12 months. A route-month
 costs about 1.3s per timetabled service: roughly a minute for a quiet
-intercity route, about six minutes for the busiest commuter routes. The first
-fill is therefore long — do it with a few overnight local runs
-(`npm run ingest -- --minutes=600`) rather than waiting on the daily schedule.
-Afterwards the daily run only has refreshing to do.
+intercity route, about seven minutes for the busiest commuter routes. Re-fetching
+a month in progress costs the same as a whole month, so keeping every route's
+month-to-date current is ongoing work, not a one-off: the schedule above gives
+about 40 hours of HSP time a day for the first fill and then for refreshing.
 
 ### Live-data approximations (worth knowing)
 

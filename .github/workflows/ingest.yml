@@ -5,20 +5,26 @@ name: Route Score ingest
 # longer than a serverless function is allowed to run. The job is resumable:
 # every chunk is stored as it lands and each run re-plans from what's stored.
 #
-# Budget: a private repo gets 2,000 free Actions minutes a month. One 50-minute
-# run a day uses ~1,600. Raise `minutes` or add schedule entries if the repo is
-# public (unlimited) or you have minutes to spare.
+# The repo is public, so Actions minutes are free and the real ceiling is HSP
+# itself (~4 concurrent calls per account). Four 5-hour runs a day keep it
+# busy about 20 hours in 24; a run ends early when there is nothing left to do.
+# If the repo is ever made private again, cut this back to one 50-minute run a
+# day (a private repo gets 2,000 free minutes a month).
+#
+# Note: GitHub pauses scheduled workflows in a public repo after 60 days with
+# no commits. It emails first; re-enable from the Actions tab.
 
 on:
   schedule:
-    - cron: "17 3 * * *" # daily, 03:17 UTC (off the hour: scheduled runs start more reliably)
+    - cron: "17 3,9,15,21 * * *" # every 6 hours (off the hour: scheduled runs start more reliably)
   workflow_dispatch:
     inputs:
       minutes:
         description: "How long to ingest for"
-        default: "50"
+        default: "300"
 
-# Never run two ingests at once — they'd fight over HSP's ~4-call limit.
+# Never run two ingests at once — they'd fight over HSP's ~4-call limit. A run
+# that is still going when the next is due makes the next one wait.
 concurrency:
   group: route-score-ingest
   cancel-in-progress: false
@@ -40,5 +46,8 @@ jobs:
           HSP_EMAIL: ${{ secrets.HSP_EMAIL }}
           HSP_PASSWORD: ${{ secrets.HSP_PASSWORD }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          MINUTES: ${{ inputs.minutes || '50' }}
+          # 2 of HSP's ~4 concurrent calls; the live site keeps the other 2 for
+          # visitors warming a new route.
+          HSP_CONCURRENCY: "2"
+          MINUTES: ${{ inputs.minutes || '300' }}
         run: node scripts/ingest.ts --minutes="$MINUTES"
