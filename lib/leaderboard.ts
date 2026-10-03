@@ -14,12 +14,12 @@
  * viewable in local dev.
  */
 
-import { BAND_HOURS, compositeScore, last12Months, metricsFromCounts, verdictFor } from "./score";
+import { PEAK_HOURS, compositeScore, last12Months, metricsFromCounts, verdictFor } from "./score";
 import { dbConfigured, ensureSchema, getRouteAggregates } from "./db";
 import { currentMonth } from "./periods";
 import { hspConfigured } from "./hsp";
 import { demoMonthlyMetrics } from "./demo";
-import { CURATED_ROUTES, LEADERBOARD_BAND, isLondonTerminal } from "./routes";
+import { CURATED_ROUTES, isLondonTerminal } from "./routes";
 import { stationByCrs } from "./stations";
 import type { Station, TimeBand } from "./types";
 
@@ -34,7 +34,7 @@ export interface LeaderboardEntry {
   avgDelayMins: number;
   totalTrains: number;
   months: number;
-  /** Approx weekday trains/day, for display. */
+  /** Approx peak-time trains per weekday, for display. */
   servicesPerDay: number;
   london: boolean;
 }
@@ -64,6 +64,10 @@ interface RouteAggregate {
   totalTrains: number;
   months: number;
 }
+
+/** The leaderboard ranks on both commuter peaks combined (PEAK_HOURS). Each
+ * entry links to the route's AM peak page, and demo mode borrows its data. */
+const LEADERBOARD_BAND: TimeBand = "am-peak";
 
 const WEEKDAYS_PER_MONTH = 21.5;
 /** Minimum coverage/volume to appear on a board. */
@@ -159,7 +163,7 @@ export async function getLeaderboard(size = 10): Promise<Leaderboard> {
   }
   await ensureSchema();
   const totals = await getRouteAggregates(
-    BAND_HOURS[LEADERBOARD_BAND],
+    PEAK_HOURS,
     [...last12Months(), currentMonth()],
     MIN_MONTHS
   );

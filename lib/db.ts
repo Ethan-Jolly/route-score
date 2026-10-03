@@ -164,9 +164,9 @@ export async function upsertHourRows(
   );
 }
 
-/** How much of one route-month is stored. */
+/** How much of one route-month is stored, counting only the hours asked about. */
 export interface PeriodCoverage {
-  /** Hours stored (24 = whole day). */
+  /** Hours stored. */
   hours: number;
   /** Hours stored and final. */
   finalHours: number;
@@ -175,11 +175,13 @@ export interface PeriodCoverage {
 }
 
 /**
- * Coverage of every route for the given periods, keyed `"FROM>TO"` then
- * period. Lets the ingest plan its work in one query instead of one per route.
+ * Coverage of every route for the given periods and hours, keyed `"FROM>TO"`
+ * then period. Lets the ingest plan its work in one query instead of one per
+ * route.
  */
 export async function getCoverage(
-  periods: string[]
+  periods: string[],
+  hours: number[]
 ): Promise<Map<string, Map<string, PeriodCoverage>>> {
   const sql = db();
   const rows = (await withRetry(
@@ -189,7 +191,7 @@ export async function getCoverage(
              COUNT(*) FILTER (WHERE final)::int  AS final_hours,
              MIN(through_date)                   AS through
       FROM hourly_metrics
-      WHERE period = ANY(${periods})
+      WHERE period = ANY(${periods}) AND hour = ANY(${hours})
       GROUP BY from_crs, to_crs, period
     `
   )) as Record<string, unknown>[];

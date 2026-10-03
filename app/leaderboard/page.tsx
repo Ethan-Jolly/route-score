@@ -78,8 +78,9 @@ export default async function LeaderboardPage(props: Props) {
       {hasData && (
         <p className="mt-10 text-xs text-slate-400">
           Ranked across {board.qualified.toLocaleString()} routes with at least
-          six months of data and regular service. All scores use all-day
-          performance so routes are directly comparable.
+          six months of data and regular service. All scores use peak-time
+          performance (06:00–09:00 and 16:00–19:00 on weekdays) so routes are
+          directly comparable.
         </p>
       )}
     </div>
@@ -143,7 +144,7 @@ function LeaderboardRow({ rank, entry }: { rank: number; entry: LeaderboardEntry
   return (
     <li>
       <Link
-        href={`/route/${entry.from.crs}-${entry.to.crs}?band=all-day`}
+        href={`/route/${entry.from.crs}-${entry.to.crs}?band=am-peak`}
         prefetch={false}
         className="group flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm hover:shadow-md hover:border-slate-300 transition-all"
       >
@@ -162,7 +163,7 @@ function LeaderboardRow({ rank, entry }: { rank: number; entry: LeaderboardEntry
           </span>
           <span className="mt-0.5 block text-xs text-slate-400 tabular-nums">
             {entry.onTimePct.toFixed(0)}% on time · ~{entry.servicesPerDay}{" "}
-            trains/day
+            peak trains/day
           </span>
         </span>
         <span

@@ -4,7 +4,7 @@ const ROUTES = [
   { from: "RDG", to: "PAD", band: "am-peak" },
   { from: "MAN", to: "LDS", band: "pm-peak" },
   { from: "CBG", to: "KGX", band: "am-peak" },
-  { from: "GLC", to: "EDB", band: "all-day" },
+  { from: "GLC", to: "EDB", band: "am-peak" },
   { from: "WOK", to: "WAT", band: "am-peak" },
 ];
 

@@ -95,8 +95,10 @@ export default async function ScoreCardPage(props: Props) {
           {result.verdict}
         </p>
         <p className="mt-2 text-[11px] text-slate-400">
-          Based on {result.totalTrains.toLocaleString("en-GB")} services ·
-          past 12 months
+          Based on {result.totalTrains.toLocaleString("en-GB")} services ·{" "}
+          {result.coverage
+            ? `most recent ${result.coverage.months} months (provisional)`
+            : "past 12 months"}
         </p>
       </div>
 

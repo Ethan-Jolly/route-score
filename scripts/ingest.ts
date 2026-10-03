@@ -17,16 +17,20 @@
 // with the live site.
 //
 // Work order each run (stalest/newest first within each):
-//   1. Looked-up routes — whatever visitors have asked for, in their bands.
-//   2. Refresh — leaderboard routes' month-to-date and just-ended months.
-//   3. Fill — curated routes still missing months (newest six months first,
+//   1. Looked-up routes, requested bands — whatever visitors have asked for,
+//      kept current to yesterday.
+//   2. Looked-up routes, the other bands — so switching band is instant too.
+//      These hours are refreshed weekly rather than daily.
+//   3. Refresh — leaderboard routes' month-to-date and just-ended months.
+//   4. Fill — curated routes still missing months (newest six months first,
 //      so a route reaches the leaderboard sooner, then the older six).
-// While there is still filling to do, refresh gets at most 30% of the run.
+// While there is still curated filling to do, steps 2 and 3 are each capped
+// at a share of the run so they can't starve it.
 
 import { appendFileSync } from "node:fs";
 import { CURATED_ROUTES } from "../lib/routes.ts";
-import { BAND_HOURS, last12Months } from "../lib/score.ts";
-import { currentMonth, periodRange } from "../lib/periods.ts";
+import { BAND_HOURS, STORED_HOURS, last12Months } from "../lib/score.ts";
+import { currentMonth, periodRange, yesterday } from "../lib/periods.ts";
 import { fetchHspHours, hspConfigured } from "../lib/hsp.ts";
 import {
   dbConfigured,
@@ -54,7 +58,8 @@ const CONCURRENCY = Number(process.env.HSP_CONCURRENCY) || 2;
 const LEADERBOARD_MONTHS = 6;
 /** Give up when this many tasks in a row fail: HSP is down or throttling us. */
 const MAX_CONSECUTIVE_FAILURES = 6;
-const ALL_HOURS = BAND_HOURS["all-day"];
+/** Only the hours some band uses (06:00–18:59) are ever fetched. */
+const ALL_HOURS = STORED_HOURS;
 
 if (!hspConfigured() || !dbConfigured()) {
   console.error("HSP_EMAIL, HSP_PASSWORD and DATABASE_URL must all be set.");
@@ -67,6 +72,8 @@ interface Task {
   period: string;
   /** Hours to fetch; null = whatever isn't stored yet (resolved when run). */
   hours: number[] | null;
+  /** Distinguishes two tasks for the same route-month (different hours). */
+  tag?: string;
 }
 
 const startedAt = Date.now();
@@ -78,40 +85,59 @@ const newestFirst = [...closed].reverse();
 const routeKey = (from: string, to: string) => `${from}>${to}`;
 
 await ensureSchema();
-const coverage = await getCoverage(periods);
+const coverage = await getCoverage(periods, ALL_HOURS);
 const curated = ONLY
   ? CURATED_ROUTES.filter((r) => ONLY.has(routeKey(r.from, r.to)))
   : CURATED_ROUTES;
 
 // ---- Plan ------------------------------------------------------------------
 
-/** 1. Looked-up routes: missing or out-of-date hours in the bands people use. */
-async function planLookups(): Promise<Task[]> {
-  if (ONLY) return [];
-  const wanted = new Map<string, Set<number>>();
+/** How far behind the other bands' hours of a looked-up route may fall before
+ * they are refreshed (the requested bands are refreshed daily). */
+const REST_REFRESH_DAYS = 7;
+
+/** 1 + 2. Looked-up routes: missing or out-of-date hours. `band` is the hours
+ * of the bands people asked for; `rest` is the hours of the other bands. */
+async function planLookups(): Promise<{ band: Task[]; rest: Task[] }> {
+  if (ONLY) return { band: [], rest: [] };
+  const restCutoff = yesterday(new Date(Date.now() - REST_REFRESH_DAYS * 86_400_000));
+
+  // A route may have been looked up in several bands; merge their hours.
+  const routes = new Map<string, Set<number>>();
   for (const r of await getPopularRoutes(50)) {
+    const key = `${r.from}|${r.to}`;
+    if (!routes.has(key)) routes.set(key, new Set());
+    for (const h of BAND_HOURS[r.band] ?? []) routes.get(key)!.add(h);
+  }
+
+  const band: Task[] = [];
+  const rest: Task[] = [];
+  for (const [key, bandHours] of routes) {
+    const [from, to] = key.split("|");
     const stored = new Map<string, { final: boolean; through: string }>();
-    for (const row of await getHourRows(r.from, r.to, periods)) {
+    for (const row of await getHourRows(from, to, periods)) {
       stored.set(`${row.period}|${row.hour}`, { final: row.final, through: row.throughDate });
     }
     for (const period of periods) {
       const range = periodRange(period);
       if (!range) continue;
-      for (const hour of BAND_HOURS[r.band] ?? []) {
+      const wantBand: number[] = [];
+      const wantRest: number[] = [];
+      for (const hour of ALL_HOURS) {
         const have = stored.get(`${period}|${hour}`);
-        if (have && (have.final || have.through >= range.to)) continue;
-        const key = `${r.from}|${r.to}|${period}`;
-        if (!wanted.has(key)) wanted.set(key, new Set());
-        wanted.get(key)!.add(hour);
+        if (have?.final) continue;
+        if (bandHours.has(hour)) {
+          if (!have || have.through < range.to) wantBand.push(hour);
+        } else if (!have || (have.through < range.to && have.through < restCutoff)) {
+          wantRest.push(hour);
+        }
       }
+      if (wantBand.length) band.push({ from, to, period, hours: wantBand, tag: "band" });
+      if (wantRest.length) rest.push({ from, to, period, hours: wantRest, tag: "rest" });
     }
   }
-  return [...wanted.entries()]
-    .map(([key, hours]) => {
-      const [from, to, period] = key.split("|");
-      return { from, to, period, hours: [...hours] };
-    })
-    .sort((a, b) => b.period.localeCompare(a.period));
+  const newest = (a: Task, b: Task) => b.period.localeCompare(a.period);
+  return { band: band.sort(newest), rest: rest.sort(newest) };
 }
 
 /** 2. Refresh: leaderboard routes whose stored months are snapshots that have
@@ -166,7 +192,8 @@ console.log(
     `budget ${MINUTES} min, ${CONCURRENCY} concurrent HSP calls`
 );
 console.log(
-  `Plan: ${lookups.length} looked-up, ${refresh.length} refresh, ` +
+  `Plan: ${lookups.band.length} looked-up (requested bands), ` +
+    `${lookups.rest.length} looked-up (other bands), ${refresh.length} refresh, ` +
     `${fillRecent.length} fill (recent 6 months), ${fillOlder.length} fill (older 6 months) route-months`
 );
 if (DRY_RUN) process.exit(0);
@@ -179,7 +206,7 @@ let consecutiveFailures = 0;
 let aborted = false;
 
 async function runTask(t: Task): Promise<void> {
-  const key = `${t.from}|${t.to}|${t.period}`;
+  const key = `${t.from}|${t.to}|${t.period}|${t.tag ?? ""}`;
   if (done.has(key)) return;
   done.add(key);
   const range = periodRange(t.period);
@@ -195,6 +222,7 @@ async function runTask(t: Task): Promise<void> {
         (await getHourRows(t.from, t.to, [t.period])).map((r) => r.hour)
       );
       hours = ALL_HOURS.filter((h) => !have.has(h));
+      if (hours.length === 0) return;
     }
     const res = await fetchHspHours(t.from, t.to, range, hours, {
       hint: await getServiceHint(t.from, t.to),
@@ -234,19 +262,21 @@ async function runPhase(name: string, tasks: Task[], deadline: number): Promise<
 }
 
 const hasFill = fillRecent.length + fillOlder.length > 0;
-await runPhase("Looked-up routes", lookups, endAt);
-await runPhase(
-  "Refresh",
-  refresh,
-  hasFill ? Date.now() + 0.3 * (endAt - Date.now()) : endAt
-);
+/** A phase's deadline: the whole run, or a share of what's left of it while
+ * curated filling is still waiting its turn. */
+const share = (fraction: number) =>
+  hasFill ? Date.now() + fraction * (endAt - Date.now()) : endAt;
+await runPhase("Looked-up routes (requested bands)", lookups.band, endAt);
+await runPhase("Looked-up routes (other bands)", lookups.rest, share(0.4));
+await runPhase("Refresh", refresh, share(0.3));
 await runPhase("Fill (recent 6 months)", fillRecent, endAt);
 await runPhase("Fill (older 6 months)", fillOlder, endAt);
+await runPhase("Looked-up routes (other bands, remaining)", lookups.rest, endAt);
 await runPhase("Refresh (remaining)", refresh, endAt);
 
 // ---- Report ----------------------------------------------------------------
 
-const after = await getCoverage(closed);
+const after = await getCoverage(closed, ALL_HOURS);
 let qualified = 0;
 let complete = 0;
 for (const r of curated) {

@@ -9,8 +9,8 @@ export const maxDuration = 60;
  * POST /api/route-score/fill  { from, to, band, maxSpanMinutes? }
  *
  * Advances the stored data for a cold route by one time-boxed step and reports
- * progress in stored hours. The client warming UI calls this repeatedly until
- * `done`. Resumable: each call picks up where the last left off, because every
+ * progress in stored hours, plus whether there is now enough to show a score
+ * (`ready`). The client calls this repeatedly until `ready`, then `done`. Resumable: each call picks up where the last left off, because every
  * chunk is persisted. If a step comes back `stalled` (the route is too busy for
  * hour-sized calls), the client retries with a smaller `maxSpanMinutes`.
  */
@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
 
   const from = (body.from ?? "").toUpperCase();
   const to = (body.to ?? "").toUpperCase();
-  const band = body.band ?? "all-day";
+  const band = body.band ?? "am-peak";
 
   if (!/^[A-Z]{3}$/.test(from) || !/^[A-Z]{3}$/.test(to)) {
     return NextResponse.json(

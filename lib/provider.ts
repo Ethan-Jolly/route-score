@@ -59,6 +59,10 @@ export interface CachedMonth extends MonthlyMetrics {
 /** Progress of filling a route's window from HSP, in stored hours. */
 export interface FillProgress {
   done: boolean;
+  /** Enough is stored to show a score (possibly a provisional one). */
+  ready: boolean;
+  /** Complete months stored for the band. */
+  months: number;
   cached: number;
   total: number;
   /** The step fetched nothing because calls were too big for its time box;
@@ -72,6 +76,10 @@ const STEP_DEADLINE_MS = 20_000;
 const STEP_CALL_TIMEOUT_MS = 28_000;
 /** Small calls (~15s) so a step always lands something. */
 const STEP_TARGET_SERVICES = 12;
+/** A busy route can take most of an hour to fetch in full, so a score is shown
+ * as soon as this many of the most recent months are stored — marked
+ * provisional — while the rest of the year loads behind it. */
+const PROVISIONAL_MONTHS = 3;
 
 /** The periods a score is built from: 12 complete months, then the month in
  * progress once it has at least one day HSP could know about. */
@@ -91,9 +99,15 @@ interface RouteState {
   missing: { period: string; hours: number[] }[];
   stored: number;
   needed: number;
-  /** Enough is stored to show a score: every complete month except possibly
-   * the newest (which the ingest may not have reached just after rollover). */
+  /** The whole year is stored: every complete month except possibly the
+   * newest (which the ingest may not have reached just after rollover). */
+  full: boolean;
+  /** Enough is stored to show a score: the full year, or at least the most
+   * recent PROVISIONAL_MONTHS (months are always fetched newest first). */
   ready: boolean;
+  /** Complete months stored, out of `closedTotal`. */
+  closedStored: number;
+  closedTotal: number;
 }
 
 async function loadRoute(
@@ -142,12 +156,17 @@ async function loadRoute(
     });
   }
 
+  const full = closed.slice(0, -1).every((p) => months.has(p));
+  const closedStored = closed.filter((p) => months.has(p)).length;
   return {
     months,
     missing: missing.reverse(),
     stored,
     needed: periods.length * hours.length,
-    ready: closed.slice(0, -1).every((p) => months.has(p)),
+    full,
+    ready: full || closedStored >= PROVISIONAL_MONTHS,
+    closedStored,
+    closedTotal: closed.length,
   };
 }
 
@@ -177,7 +196,7 @@ export async function getRouteScore(
     state = await loadRoute(from, to, band);
     if (!state.ready) return { warming: progress };
   }
-  return assemble(from, to, band, state.months);
+  return assembleState(from, to, band, state) ?? { warming: progressOf(state, false) };
 }
 
 /**
@@ -195,7 +214,7 @@ export async function fillRouteStep(
   const { from, to } = stations;
 
   if (!hspConfigured() || !dbConfigured()) {
-    return { done: true, cached: 12, total: 12, stalled: false };
+    return { done: true, ready: true, months: 12, cached: 12, total: 12, stalled: false };
   }
 
   await ensureSchema();
@@ -215,9 +234,7 @@ async function fillStep(
   // Popularity signal: the ingest keeps looked-up routes fresh. Never block on it.
   recordLookup(from.crs, to.crs, band).catch(() => {});
 
-  if (state.missing.length === 0) {
-    return { done: true, cached: state.stored, total: state.needed, stalled: false };
-  }
+  if (state.missing.length === 0) return progressOf(state, false);
 
   const deadline = Date.now() + STEP_DEADLINE_MS;
   const hint = await getServiceHint(from.crs, to.crs);
@@ -254,18 +271,43 @@ async function fillStep(
     throw (failure as PromiseRejectedResult).reason;
   }
 
-  const cached = state.stored + landed;
+  return progressOf(await loadRoute(from, to, band), landed === 0);
+}
+
+function progressOf(state: RouteState, stalled: boolean): FillProgress {
   return {
-    done: cached >= state.needed,
-    cached,
+    done: state.missing.length === 0,
+    ready: state.ready,
+    months: state.closedStored,
+    cached: state.stored,
     total: state.needed,
-    stalled: landed === 0,
+    stalled,
   };
 }
 
-/** DB-only fast path: returns a result only if the route is already stored,
- * otherwise null. Never calls HSP. Used by every page. In demo mode this is
- * just the score. */
+/** Assemble what's stored, or null if it isn't showable yet. A provisional
+ * "no service" is not trusted — older months may still have trains. */
+function assembleState(
+  from: Station,
+  to: Station,
+  band: TimeBand,
+  state: RouteState
+): Outcome {
+  if (!state.ready) return null;
+  const outcome = assemble(
+    from,
+    to,
+    band,
+    state.months,
+    state.full ? undefined : { months: state.closedStored, total: state.closedTotal }
+  );
+  if (!state.full && outcome?.noService) return null;
+  return outcome;
+}
+
+/** DB-only fast path: returns a result only if enough of the route is stored
+ * to show (a provisional result carries `coverage`), otherwise null. Never
+ * calls HSP. Used by every page. In demo mode this is just the score. */
 export async function getCachedRouteScore(
   fromCrs: string,
   toCrs: string,
@@ -282,9 +324,7 @@ export async function getCachedRouteScore(
 
   try {
     await ensureSchema();
-    const state = await loadRoute(from, to, band);
-    if (!state.ready) return null;
-    return assemble(from, to, band, state.months);
+    return assembleState(from, to, band, await loadRoute(from, to, band));
   } catch {
     // A transient DB failure shouldn't 500 the page — degrade to "not cached"
     // (the caller shows the warming UI, which self-heals when the DB recovers).
@@ -324,7 +364,8 @@ function assemble(
   from: Station,
   to: Station,
   band: TimeBand,
-  months: Map<string, CachedMonth>
+  months: Map<string, CachedMonth>,
+  coverage?: { months: number; total: number }
 ): Outcome {
   const withService = [...months.values()]
     .filter((m) => !m.noService && m.totalTrains > 0)
@@ -380,6 +421,7 @@ function assemble(
     quietestMonth: byVolume[byVolume.length - 1].month,
     source,
     dataThrough,
+    coverage,
   };
 }
 
@@ -397,7 +439,8 @@ function operatorsFor(
   return demoOperators(from.crs, to.crs);
 }
 
-/** Parses slugs like "BTN-LBG-am-peak" or "BTN-LBG" (band defaults to all-day). */
+/** Parses slugs like "BTN-LBG-am-peak" or "BTN-LBG". The band defaults to AM
+ * peak, which is also where links to the retired all-day band now land. */
 export function parseRouteSlug(
   slug: string
 ): { from: string; to: string; band: TimeBand } | null {
@@ -407,8 +450,9 @@ export function parseRouteSlug(
   const to = parts[1].toUpperCase();
   if (!/^[A-Z]{3}$/.test(from) || !/^[A-Z]{3}$/.test(to)) return null;
   const bandStr = parts.slice(2).join("-").toLowerCase();
-  const band: TimeBand = bandStr === "" ? "all-day" : (bandStr as TimeBand);
-  if (!["am-peak", "pm-peak", "off-peak", "all-day"].includes(band)) return null;
+  const band: TimeBand =
+    bandStr === "" || bandStr === "all-day" ? "am-peak" : (bandStr as TimeBand);
+  if (!["am-peak", "pm-peak", "off-peak"].includes(band)) return null;
   return { from, to, band };
 }
 

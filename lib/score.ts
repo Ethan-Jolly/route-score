@@ -10,20 +10,26 @@ export const BAND_LABELS: Record<TimeBand, string> = {
   "am-peak": "AM Peak",
   "pm-peak": "PM Peak",
   "off-peak": "Off-Peak",
-  "all-day": "All Day",
 };
 
 const hourRange = (from: number, to: number) =>
   Array.from({ length: to - from }, (_, i) => from + i);
 
 /** Departure hours (0–23) each band covers. Performance is stored per hour, so
- * every band is just a sum over its hours — one ingest serves all four. */
+ * every band is just a sum over its hours — one ingest serves all three.
+ * There is deliberately no all-day band: the app compares commuting times,
+ * and early-morning/late-evening hours would nearly double the HSP cost. */
 export const BAND_HOURS: Record<TimeBand, number[]> = {
   "am-peak": hourRange(6, 9),
   "pm-peak": hourRange(16, 19),
   "off-peak": hourRange(9, 16),
-  "all-day": hourRange(0, 24),
 };
+
+/** Every hour some band uses (06:00–18:59) — all the ingest ever fetches. */
+export const STORED_HOURS = hourRange(6, 19);
+
+/** Both commuter peaks together — what the leaderboard ranks on. */
+export const PEAK_HOURS = [...BAND_HOURS["am-peak"], ...BAND_HOURS["pm-peak"]];
 
 /**
  * Percentages from raw punctuality counts. HSP gives tolerance buckets only,
@@ -47,7 +53,7 @@ export function metricsFromCounts(
 }
 
 export function isTimeBand(value: string): value is TimeBand {
-  return ["am-peak", "pm-peak", "off-peak", "all-day"].includes(value);
+  return ["am-peak", "pm-peak", "off-peak"].includes(value);
 }
 
 /** The spec's composite formula: 60% on-time, 25% reliability, 15% delay severity. */

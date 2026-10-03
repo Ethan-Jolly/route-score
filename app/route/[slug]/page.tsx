@@ -6,7 +6,7 @@ import { TrendBadge, TrendChart } from "@/components/TrendChart";
 import { MetricBar } from "@/components/MetricBar";
 import { CopyLinkButton } from "@/components/CopyLinkButton";
 import { NoServiceCard } from "@/components/NoServiceCard";
-import { RouteWarming } from "@/components/RouteWarming";
+import { RouteFilling, RouteWarming } from "@/components/RouteWarming";
 import { getCachedRouteScore, parseRouteSlug, routeSlug } from "@/lib/provider";
 import { stationByCrs } from "@/lib/stations";
 import {
@@ -15,7 +15,7 @@ import {
   TIER_COLORS,
   tierFor,
 } from "@/lib/score";
-import type { Station, TimeBand } from "@/lib/types";
+import type { RouteScoreResult, Station, TimeBand } from "@/lib/types";
 
 interface Props {
   params: Promise<{ slug: string }>;
@@ -60,18 +60,42 @@ export async function generateMetadata(props: Props): Promise<Metadata> {
   return { title: `${r.from.name} → ${r.to.name} (${BAND_LABELS[r.band]})` };
 }
 
-const BANDS: TimeBand[] = ["am-peak", "pm-peak", "off-peak", "all-day"];
+const BANDS: TimeBand[] = ["am-peak", "pm-peak", "off-peak"];
+
+/** When the requested band isn't stored yet, another band of the same route
+ * often is — show that straight away rather than a loading screen. */
+async function storedFallback(
+  from: string,
+  to: string,
+  requested: TimeBand
+): Promise<RouteScoreResult | null> {
+  const others = await Promise.all(
+    BANDS.filter((b) => b !== requested).map((b) => getCachedRouteScore(from, to, b))
+  );
+  const usable = others.filter(
+    (r): r is RouteScoreResult => r !== null && r.noService === false
+  );
+  // Prefer a complete band over a provisional one.
+  return usable.find((r) => !r.coverage) ?? usable[0] ?? null;
+}
 
 export default async function RoutePage(props: Props) {
   const r = await resolveRoute(props);
   if (!r.ok) notFound();
-  if (!r.result) {
+  const fallback = r.result ? null : await storedFallback(r.from.crs, r.to.crs, r.band);
+  if (!r.result && !fallback) {
     return <RouteWarming from={r.from} to={r.to} band={r.band} />;
   }
-  if (r.result.noService) {
+  if (r.result?.noService) {
     return <NoServiceCard from={r.from} to={r.to} band={r.band} />;
   }
-  const result = r.result;
+  const result = (r.result ?? fallback) as RouteScoreResult;
+  // The band still being collected, if any: the one asked for (while another
+  // band stands in), or the one on screen (while its history loads).
+  const collecting = fallback ? r.band : result.coverage ? result.band : null;
+  const period = result.coverage
+    ? `the most recent ${result.coverage.months} months`
+    : "the past 12 months";
 
   const color = TIER_COLORS[tierFor(result.score)];
   const shareUrl = `/score/${routeSlug(result.from.crs, result.to.crs, result.band)}`;
@@ -94,10 +118,13 @@ export default async function RoutePage(props: Props) {
                 className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
                   b === result.band
                     ? "bg-slate-900 text-white"
-                    : "bg-slate-100 text-slate-500 hover:bg-slate-200"
+                    : b === collecting
+                      ? "bg-sky-100 text-sky-800"
+                      : "bg-slate-100 text-slate-500 hover:bg-slate-200"
                 }`}
               >
                 {BAND_LABELS[b]}
+                {b === collecting && b !== result.band && " · collecting"}
               </Link>
             ))}
           </div>
@@ -112,6 +139,22 @@ export default async function RoutePage(props: Props) {
           </Link>
         </div>
       </div>
+
+      {collecting && (
+        <RouteFilling
+          key={collecting}
+          from={result.from.crs}
+          to={result.to.crs}
+          band={collecting}
+          months={fallback ? 0 : (result.coverage?.months ?? 0)}
+          ready={!fallback}
+          message={
+            fallback
+              ? `${BAND_LABELS[collecting]} is still being collected for this route — showing ${BAND_LABELS[result.band]} in the meantime.`
+              : `Provisional score from ${period}. The rest of the year is still loading.`
+          }
+        />
+      )}
 
       {/* Score hero */}
       <div className="rise-in-delay-1 mt-8 grid gap-6 lg:grid-cols-[auto_1fr] items-center rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 shadow-sm">
@@ -132,8 +175,8 @@ export default async function RoutePage(props: Props) {
             {result.verdict}
           </p>
           <p className="mt-2 text-sm text-slate-500">
-            Based on {result.totalTrains.toLocaleString("en-GB")} services over
-            the past 12 months
+            Based on {result.totalTrains.toLocaleString("en-GB")} services over{" "}
+            {period}
             {result.dataThrough &&
               `, up to ${new Date(result.dataThrough).toLocaleDateString("en-GB", {
                 day: "numeric",
@@ -192,7 +235,7 @@ export default async function RoutePage(props: Props) {
       <section className="rise-in-delay-3 mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400">
-            Score over the past 12 months
+            Score over {period}
           </h2>
           <TrendBadge trend={result.trend} />
         </div>

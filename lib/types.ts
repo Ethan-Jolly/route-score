@@ -1,4 +1,4 @@
-export type TimeBand = "am-peak" | "pm-peak" | "off-peak" | "all-day";
+export type TimeBand = "am-peak" | "pm-peak" | "off-peak";
 
 export interface Station {
   crs: string;
@@ -65,4 +65,7 @@ export interface RouteScoreResult {
   source: "hsp" | "demo";
   /** Last date the underlying data covers (YYYY-MM-DD); absent for demo data. */
   dataThrough?: string;
+  /** Present while history is still being collected: the score is provisional,
+   * built from only the `months` most recent complete months of `total`. */
+  coverage?: { months: number; total: number };
 }

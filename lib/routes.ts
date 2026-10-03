@@ -7,18 +7,15 @@
  * plus the major UK intercity city pairs. Both directions of each pair are
  * included (A→B and B→A score differently and are distinct routes).
  *
- * All routes use the `all-day` band so scores are directly comparable on the
- * leaderboard. Every CRS here is validated against stations.json by the
+ * The leaderboard ranks every route on the same hours (both commuter peaks)
+ * so scores are directly comparable. Every CRS here is validated against
+ * stations.json by the
  * routes.test-style check in scripts/validate-routes.mjs — unknown codes are a
  * build error, so this list stays honest as stations change.
  *
  * A route is a "London" route (for the London leaderboard) iff one of its
  * endpoints is a London terminal — see LONDON_TERMINALS.
  */
-
-import type { TimeBand } from "./types";
-
-export const LEADERBOARD_BAND: TimeBand = "all-day";
 
 export interface CuratedRoute {
   from: string;

@@ -39,8 +39,8 @@ separate job, because of how HSP behaves (measured October 2026):
 - A call costs roughly **1–1.7 seconds per distinct timetabled service** it
   returns. The date range is almost free; the time-of-day window is what costs.
 - HSP's own gateway gives up at **120 seconds**. A busy route can never be
-  fetched "all day" in one call (London Waterloo → Woking has ~270 services a
-  day), whatever the date range.
+  fetched for a whole day in one call (London Waterloo → Woking has ~270
+  services a day), whatever the date range.
 - More than **~4 concurrent calls** per account are rejected with 503.
 - Data is available about **a day** after the trains ran.
 
@@ -50,7 +50,8 @@ So the design is:
   departure hour (`hourly_metrics`). HSP calls are sliced by hour — sized from
   how many services each hour is known to hold, and halved on timeout — and
   results are bucketed by scheduled departure time. Every time band is then
-  just a sum over its hours, so one fetch serves all four bands.
+  just a sum over its hours, so one fetch serves all three bands. Only
+  06:00–18:59 is ever fetched — the hours the bands cover.
 - **A standalone ingest** (`scripts/ingest.ts`) talks to HSP and Postgres
   directly. It runs on a schedule in GitHub Actions, or locally. It is fully
   resumable: every chunk is stored as it lands and each run re-plans from
@@ -62,9 +63,16 @@ So the design is:
   snapshot through `through_date` and get refreshed.
 - **On-demand fill for new routes.** A route nobody has looked up before shows
   a warming screen that drives `/api/route-score/fill` in short, time-boxed
-  steps (each well inside the 60s function limit). A quiet route takes under a
-  minute; a very busy one several minutes. The first step registers the route
-  with the ingest, which finishes it in the background if the visitor leaves.
+  steps (each well inside the 60s function limit), newest month first. HSP's
+  per-service cost means a busy route's full year can take the best part of an
+  hour, so the visitor is never made to wait for it:
+  - As soon as the **three most recent months** are stored the dashboard
+    appears with a **provisional** score, and the rest of the year loads behind
+    a small progress banner, the page updating as each month lands.
+  - If the requested band isn't stored but **another band of the route is**,
+    that band is shown immediately while the requested one is collected.
+  - The first step registers the route with the ingest, which finishes it in
+    the background if the visitor leaves.
 
 Because old months are never deleted, the database also accumulates history
 beyond HSP's rolling one-year window.
@@ -84,14 +92,17 @@ with the live site, so don't run two ingests at the same time.
 
 Each run works in this order:
 
-1. **Looked-up routes** — whatever visitors have asked for, in their bands:
+1. **Looked-up routes, requested bands** — whatever visitors have asked for:
    missing months, plus the month-to-date if it's behind.
-2. **Refresh** — routes already on the leaderboard: month-to-date and
+2. **Looked-up routes, the other bands** — so switching band on a route
+   someone has visited is instant. Refreshed weekly, not daily.
+3. **Refresh** — routes already on the leaderboard: month-to-date and
    just-ended months, stalest first.
-3. **Fill** — curated routes still missing months, newest six months first (so
+4. **Fill** — curated routes still missing months, newest six months first (so
    a route reaches the leaderboard sooner), then the older six.
 
-While there is still filling to do, refresh gets at most 30% of the run.
+While there is still curated filling to do, steps 2 and 3 are each capped at a
+share of the run (40% and 30% of what's left) so they can't starve it.
 
 A run that had work to do and stored nothing exits non-zero, so a broken
 ingest shows up red in GitHub Actions instead of passing silently.
@@ -135,7 +146,9 @@ route_score        = weighted sum, 0–100
 ```
 
 Time bands are sums of departure hours: AM peak 06:00–08:59, off-peak
-09:00–15:59, PM peak 16:00–18:59, all day 00:00–23:59.
+09:00–15:59, PM peak 16:00–18:59. There is no all-day band (the spec had one):
+the app is about comparing commuting times, and the extra early and late hours
+made busy routes far slower to fetch. Old all-day links open AM peak.
 
 Trend arrow compares the latest 3-month moving average against the previous one
 (±2 points = improving/degrading, else stable). The month in progress joins the
@@ -162,8 +175,9 @@ error — Route Score rates direct journeys only.
 the whole UK and London-only. Rankings are drawn from a **curated universe** of
 ~1,000 real routes in `lib/routes.ts` (every London terminal against the real
 destinations on its lines, plus the major UK intercity city pairs, both
-directions). All use the `all-day` band so scores are directly comparable, and
-a route needs ≥6 fully stored months of real service to appear.
+directions). All are ranked on **both commuter peaks combined** (06:00–08:59
+and 16:00–18:59) so scores are directly comparable, and a route needs ≥6 fully
+stored months of real service to appear.
 
 ## Deploying to Vercel
 

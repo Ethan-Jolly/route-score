@@ -33,7 +33,6 @@ const BAND_PENALTY: Record<TimeBand, number> = {
   "am-peak": 4,
   "pm-peak": 5.5,
   "off-peak": 0,
-  "all-day": 2.5,
 };
 
 /** Seasonal on-time penalty by calendar month (1–12). UK rail's shape. */
@@ -54,8 +53,7 @@ export function demoMonthlyMetrics(
   // Worse routes also have worse delays when late.
   const baseDelay = 5 + (93 - baseOnTime) * 0.22 + rand() * 2;
   // Service volume: 25–85 trains/day all-day, scaled to the band's share.
-  const bandScale =
-    band === "all-day" ? 1 : band === "off-peak" ? 0.45 : 0.22;
+  const bandScale = band === "off-peak" ? 0.45 : 0.22;
   const dailyServices = Math.max(4, Math.round((25 + rand() * 60) * bandScale));
   // Year-long drift: some routes are genuinely getting better or worse.
   // Spread up to ±7 points of on-time % across the 12 months.

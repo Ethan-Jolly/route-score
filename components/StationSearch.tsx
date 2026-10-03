@@ -6,13 +6,12 @@ import { searchStations } from "@/lib/stations";
 import { BAND_LABELS } from "@/lib/score";
 import type { Station, TimeBand } from "@/lib/types";
 
-const BANDS: TimeBand[] = ["am-peak", "pm-peak", "off-peak", "all-day"];
+const BANDS: TimeBand[] = ["am-peak", "pm-peak", "off-peak"];
 
 const BAND_HINTS: Record<TimeBand, string> = {
   "am-peak": "06:00–09:00",
   "pm-peak": "16:00–19:00",
-  "off-peak": "everything else",
-  "all-day": "24 hours",
+  "off-peak": "09:00–16:00",
 };
 
 function StationField({

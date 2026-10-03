@@ -15,7 +15,7 @@ export const maxDuration = 60;
 export async function GET(req: NextRequest) {
   const from = req.nextUrl.searchParams.get("from")?.toUpperCase() ?? "";
   const to = req.nextUrl.searchParams.get("to")?.toUpperCase() ?? "";
-  const band = req.nextUrl.searchParams.get("band") ?? "all-day";
+  const band = req.nextUrl.searchParams.get("band") ?? "am-peak";
 
   if (!/^[A-Z]{3}$/.test(from) || !/^[A-Z]{3}$/.test(to)) {
     return NextResponse.json(
@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
   }
   if (!isTimeBand(band)) {
     return NextResponse.json(
-      { error: "band must be one of am-peak, pm-peak, off-peak, all-day" },
+      { error: "band must be one of am-peak, pm-peak, off-peak" },
       { status: 400 }
     );
   }
