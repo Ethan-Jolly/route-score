@@ -13,12 +13,38 @@ export const BAND_LABELS: Record<TimeBand, string> = {
   "all-day": "All Day",
 };
 
-export const BAND_TIMES: Record<TimeBand, { from: string; to: string }> = {
-  "am-peak": { from: "0600", to: "0900" },
-  "pm-peak": { from: "1600", to: "1900" },
-  "off-peak": { from: "0900", to: "1600" },
-  "all-day": { from: "0000", to: "2359" },
+const hourRange = (from: number, to: number) =>
+  Array.from({ length: to - from }, (_, i) => from + i);
+
+/** Departure hours (0–23) each band covers. Performance is stored per hour, so
+ * every band is just a sum over its hours — one ingest serves all four. */
+export const BAND_HOURS: Record<TimeBand, number[]> = {
+  "am-peak": hourRange(6, 9),
+  "pm-peak": hourRange(16, 19),
+  "off-peak": hourRange(9, 16),
+  "all-day": hourRange(0, 24),
 };
+
+/**
+ * Percentages from raw punctuality counts. HSP gives tolerance buckets only,
+ * so reliability ≈ % within 30 min and average delay is estimated from bucket
+ * midpoints (5–30 min late ≈ 12 min, 30+ min ≈ 40 min).
+ */
+export function metricsFromCounts(
+  trains: number,
+  within5: number,
+  within30: number
+): { onTimePct: number; reliabilityPct: number; avgDelayMins: number } {
+  if (trains <= 0) return { onTimePct: 0, reliabilityPct: 0, avgDelayMins: 0 };
+  const late5to30 = Math.max(0, within30 - within5);
+  const over30 = Math.max(0, trains - within30);
+  const late = late5to30 + over30;
+  return {
+    onTimePct: round1((within5 / trains) * 100),
+    reliabilityPct: round1((within30 / trains) * 100),
+    avgDelayMins: late > 0 ? round1((late5to30 * 12 + over30 * 40) / late) : 0,
+  };
+}
 
 export function isTimeBand(value: string): value is TimeBand {
   return ["am-peak", "pm-peak", "off-peak", "all-day"].includes(value);

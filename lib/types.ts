@@ -63,4 +63,6 @@ export interface RouteScoreResult {
   quietestMonth: string;
   /** Which data source produced this result */
   source: "hsp" | "demo";
+  /** Last date the underlying data covers (YYYY-MM-DD); absent for demo data. */
+  dataThrough?: string;
 }

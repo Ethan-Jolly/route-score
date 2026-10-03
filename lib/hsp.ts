@@ -5,30 +5,33 @@
  * Data Portal, https://opendata.nationalrail.co.uk/). Without credentials the
  * app falls back to the demo data provider.
  *
- * Metric caveats, since serviceMetrics only returns punctuality tolerance
- * buckets (no cancellation counts and no exact lateness minutes):
- * - reliabilityPct is approximated as the % of trains within 30 minutes.
- * - avgDelayMins is estimated from bucket midpoints: trains late by 5–30 min
- *   are assumed ~12 min late, trains beyond 30 min ~40 min late.
- * Exact values would need per-train serviceDetails calls (one per rid), which
- * is too many requests for an MVP. Both caveats are surfaced in the README.
+ * How HSP behaves (measured, Oct 2026), which shapes everything here:
+ * - A call costs ~1–1.7s per distinct timetabled service it returns. The date
+ *   range is almost free; the time-of-day window is what matters.
+ * - HSP's own gateway gives up at 120s, so a busy route can never be fetched
+ *   "all day" in one call. Queries are sliced by departure hour, sized from
+ *   how many services each hour is known (or probed) to hold.
+ * - More than ~4 concurrent calls per account are rejected with 503.
+ *
+ * Results are bucketed by departure hour and kept as raw counts, so any time
+ * band is a sum over its hours and nothing is fetched twice per band.
+ *
+ * Metric caveat: serviceMetrics only returns punctuality tolerance buckets (no
+ * cancellation counts, no exact lateness), so reliability and average delay
+ * are approximations — see metricsFromCounts in score.ts.
  */
-
-import type { TimeBand } from "./types";
-import { BAND_TIMES } from "./score";
 
 const HSP_BASE = "https://hsp-prod.rockshore.net/api/v1";
 
-/** One month of route performance as measured from HSP, ready for the cache.
- * `noService` = HSP confirmed no direct trains for this pair/band/month. */
-export interface HspMonth {
-  month: string;
-  totalTrains: number;
-  onTimePct: number;
-  reliabilityPct: number;
-  avgDelayMins: number;
+/** Raw performance for one departure hour of a route over a date range. */
+export interface HourCounts {
+  hour: number;
+  trains: number;
+  within5: number;
+  within30: number;
+  /** Distinct timetabled services seen — the cost driver, used to size calls. */
+  services: number;
   tocCodes: string[];
-  noService: boolean;
 }
 
 interface HspMetric {
@@ -43,6 +46,7 @@ interface HspService {
   serviceAttributesMetrics: {
     origin_location: string;
     destination_location: string;
+    /** Scheduled departure from the queried origin, "HHMM". */
     gbtt_ptd: string;
     gbtt_pta: string;
     toc_code: string;
@@ -57,6 +61,9 @@ interface HspMetricsResponse {
   Services: HspService[];
 }
 
+/** The call was too big for the time allowed — retry it as smaller slices. */
+export class HspTimeoutError extends Error {}
+
 export function hspConfigured(): boolean {
   return Boolean(process.env.HSP_EMAIL && process.env.HSP_PASSWORD);
 }
@@ -68,14 +75,17 @@ function authHeader(): string {
 
 /**
  * Process-wide gate on concurrent HSP calls. HSP 503s the moment more than ~4
- * requests are in flight per account, and that limit is shared across *all*
- * requests this server is handling — so per-request limiting isn't enough.
- * Everything funnels through here, capped conservatively at 3 to leave headroom.
+ * requests are in flight per account, and that limit is shared by everything
+ * using the account (the site and the ingest job), so each process stays well
+ * under it. Override with HSP_CONCURRENCY.
  */
 class Semaphore {
   private active = 0;
   private waiters: (() => void)[] = [];
-  constructor(private readonly max: number) {}
+  private readonly max: number;
+  constructor(max: number) {
+    this.max = max;
+  }
   async run<T>(fn: () => Promise<T>): Promise<T> {
     if (this.active >= this.max) {
       await new Promise<void>((res) => this.waiters.push(res));
@@ -89,23 +99,36 @@ class Semaphore {
     }
   }
 }
-const hspGate = new Semaphore(3);
+const hspGate = new Semaphore(Number(process.env.HSP_CONCURRENCY) || 2);
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const pad = (n: number) => String(n).padStart(2, "0");
 
-/** POST to HSP through the gate, retrying transient 503/429 (which here mean
- * "too many concurrent") with jittered backoff. */
-async function hspPost(body: unknown): Promise<Response> {
+/** POST to HSP through the gate. Transient 503/429 ("too many concurrent")
+ * are retried with jittered backoff; a 504 or our own timeout means the query
+ * was too big and surfaces as HspTimeoutError. */
+async function hspPost(body: unknown, timeoutMs: number): Promise<Response> {
   return hspGate.run(async () => {
     for (let attempt = 0; ; attempt++) {
-      const res = await fetch(`${HSP_BASE}/serviceMetrics`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: authHeader(),
-        },
-        body: JSON.stringify(body),
-      });
+      let res: Response;
+      try {
+        res = await fetch(`${HSP_BASE}/serviceMetrics`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: authHeader(),
+          },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+      } catch (e) {
+        const name = (e as Error)?.name;
+        if (name === "TimeoutError" || name === "AbortError") {
+          throw new HspTimeoutError(`HSP call exceeded ${timeoutMs}ms`);
+        }
+        throw e;
+      }
+      if (res.status === 504) throw new HspTimeoutError("HSP gateway timeout");
       if ((res.status === 503 || res.status === 429) && attempt < 4) {
         await sleep(1200 * (attempt + 1) + Math.random() * 800);
         continue;
@@ -115,86 +138,229 @@ async function hspPost(body: unknown): Promise<Response> {
   });
 }
 
-/**
- * Fetch and aggregate one calendar month for a route/band from HSP.
- *
- * HSP takes ~15–25s per call and 503s past ~4 concurrent, so calls are gated
- * (see Semaphore) and retried on transient throttling.
- */
-export async function fetchHspMonth(
+interface DateRange {
+  from: string;
+  to: string;
+}
+
+/** One HSP call: weekday services departing `from` within [fromTime, toTime]
+ * (both inclusive, "HHMM") over the date range. */
+async function fetchWindow(
   from: string,
   to: string,
-  band: TimeBand,
-  month: string
-): Promise<HspMonth> {
-  const [year, m] = month.split("-").map(Number);
-  const lastDay = new Date(year, m, 0).getDate();
-  const times = BAND_TIMES[band];
-
-  const res = await hspPost({
-    from_loc: from,
-    to_loc: to,
-    from_time: times.from,
-    to_time: times.to,
-    from_date: `${month}-01`,
-    to_date: `${month}-${String(lastDay).padStart(2, "0")}`,
-    days: "WEEKDAY",
-    tolerance: ["5", "30"],
-  });
-
+  range: DateRange,
+  fromTime: string,
+  toTime: string,
+  timeoutMs: number
+): Promise<HspService[]> {
+  const res = await hspPost(
+    {
+      from_loc: from,
+      to_loc: to,
+      from_time: fromTime,
+      to_time: toTime,
+      from_date: range.from,
+      to_date: range.to,
+      days: "WEEKDAY",
+      tolerance: ["5", "30"],
+    },
+    timeoutMs
+  );
   if (!res.ok) {
-    throw new Error(`HSP serviceMetrics ${res.status} for ${from}-${to} ${month}`);
+    throw new Error(
+      `HSP serviceMetrics ${res.status} for ${from}-${to} ${range.from}..${range.to} ${fromTime}-${toTime}`
+    );
   }
-
   const data = (await res.json()) as HspMetricsResponse;
-  const services = data.Services ?? [];
+  return data.Services ?? [];
+}
 
-  let total = 0;
-  let within5 = 0;
-  let within30 = 0;
-  const tocs = new Set<string>();
-  for (const svc of services) {
-    const matched = Number(svc.serviceAttributesMetrics.matched_services) || 0;
-    total += matched;
-    if (svc.serviceAttributesMetrics.toc_code) {
-      tocs.add(svc.serviceAttributesMetrics.toc_code);
-    }
-    for (const metric of svc.Metrics) {
-      const inTolerance = Number(metric.num_tolerance) || 0;
-      if (metric.tolerance_value === "5") within5 += inTolerance;
-      if (metric.tolerance_value === "30") within30 += inTolerance;
-    }
-  }
-
-  if (total === 0) {
-    // No direct trains for this pair/band/month. Cache the fact so we never
-    // re-query it (distinguishes "dead route" from "not yet fetched").
-    return {
-      month,
-      totalTrains: 0,
-      onTimePct: 0,
-      reliabilityPct: 0,
-      avgDelayMins: 0,
+/** Bucket services into the given hours by scheduled departure time. Every
+ * requested hour gets a row (zeros included) so "fetched, no trains" is
+ * distinguishable from "not fetched". */
+function bucketByHour(services: HspService[], hours: number[]): HourCounts[] {
+  const rows = new Map<number, HourCounts & { tocs: Set<string> }>();
+  for (const h of hours) {
+    rows.set(h, {
+      hour: h,
+      trains: 0,
+      within5: 0,
+      within30: 0,
+      services: 0,
       tocCodes: [],
-      noService: true,
-    };
+      tocs: new Set(),
+    });
   }
+  const first = hours[0];
+  const last = hours[hours.length - 1];
+  for (const svc of services) {
+    const attrs = svc.serviceAttributesMetrics;
+    const h = Number(attrs.gbtt_ptd?.slice(0, 2));
+    // Anything HSP returns outside the window is clamped into it, not dropped.
+    const row = rows.get(Number.isFinite(h) ? Math.min(last, Math.max(first, h)) : first)!;
+    row.services++;
+    row.trains += Number(attrs.matched_services) || 0;
+    if (attrs.toc_code) row.tocs.add(attrs.toc_code);
+    for (const metric of svc.Metrics ?? []) {
+      const inTolerance = Number(metric.num_tolerance) || 0;
+      if (metric.tolerance_value === "5") row.within5 += inTolerance;
+      if (metric.tolerance_value === "30") row.within30 += inTolerance;
+    }
+  }
+  return hours.map((h) => {
+    const { tocs, ...row } = rows.get(h)!;
+    return { ...row, tocCodes: [...tocs] };
+  });
+}
 
-  const late5to30 = Math.max(0, within30 - within5);
-  const over30 = Math.max(0, total - within30);
-  const lateTrains = late5to30 + over30;
-  const avgDelayMins =
-    lateTrains > 0 ? (late5to30 * 12 + over30 * 40) / lateTrains : 0;
+export interface FetchHoursOptions {
+  /** Services previously seen per hour for this route, to size calls. */
+  hint?: Map<number, number>;
+  /** Aim for about this many services per call (~1–1.7s each). */
+  targetServices?: number;
+  /** Per-call timeout. HSP itself gives up at 120s. */
+  timeoutMs?: number;
+  /** Epoch ms after which no new call is started (for serverless budgets). */
+  deadline?: number;
+  /** Largest window a single call may cover; below 60 splits within hours. */
+  maxSpanMinutes?: number;
+  /** Called with each chunk's rows as it lands, so progress can be persisted. */
+  onChunk?: (rows: HourCounts[]) => Promise<void>;
+}
 
-  return {
-    month,
-    totalTrains: total,
-    onTimePct: round1((within5 / total) * 100),
-    reliabilityPct: round1((within30 / total) * 100),
-    avgDelayMins: round1(avgDelayMins),
-    tocCodes: [...tocs],
-    noService: false,
+/** Hour most likely to be a route's busiest, probed first when nothing is
+ * known about it, so later calls can be sized from a worst-case density. */
+const PROBE_HOURS = [8, 17, 7, 18, 12];
+const MIN_SPAN_MINUTES = 15;
+
+/**
+ * Fetch the given departure hours of a route for a date range, in as few HSP
+ * calls as its service density allows. Chunks that time out are halved, down
+ * to 15-minute slices of a single hour. Returns the rows fetched and whether
+ * every requested hour was covered (false only when `deadline` cut it short);
+ * `timedOut` says a call was too big for `timeoutMs`, so a caller on a tight
+ * budget can come back with a smaller `maxSpanMinutes`.
+ */
+export async function fetchHspHours(
+  from: string,
+  to: string,
+  range: DateRange,
+  hours: number[],
+  opts: FetchHoursOptions = {}
+): Promise<{ rows: HourCounts[]; complete: boolean; timedOut: boolean }> {
+  const target = opts.targetServices ?? 30;
+  const timeoutMs = opts.timeoutMs ?? 110_000;
+  const maxSpan = opts.maxSpanMinutes ?? Infinity;
+  const known = new Map(opts.hint ?? []);
+  let fallbackDensity: number | null = null;
+  let maxLen = maxSpan < 120 ? 1 : Math.floor(maxSpan / 60);
+
+  const pending = [...new Set(hours)].sort((a, b) => a - b);
+  const out: HourCounts[] = [];
+  let timedOut = false;
+  const partial = () => ({ rows: out, complete: false, timedOut });
+
+  const land = async (rows: HourCounts[]) => {
+    for (const r of rows) known.set(r.hour, r.services);
+    out.push(...rows);
+    if (opts.onChunk) await opts.onChunk(rows);
   };
+  const expired = () => opts.deadline !== undefined && Date.now() >= opts.deadline;
+
+  /** One hour, split into sub-hour slices when it is too dense for one call. */
+  const fetchHour = async (hour: number, span: number): Promise<HourCounts> => {
+    const parts: HspService[] = [];
+    for (let start = 0; start < 60; start += span) {
+      const end = Math.min(60, start + span) - 1;
+      parts.push(
+        ...(await fetchWindow(
+          from,
+          to,
+          range,
+          `${pad(hour)}${pad(start)}`,
+          `${pad(hour)}${pad(end)}`,
+          timeoutMs
+        ))
+      );
+    }
+    return bucketByHour(parts, [hour])[0];
+  };
+  const fetchHourAdaptive = async (hour: number): Promise<HourCounts> => {
+    for (let span = Math.min(60, maxSpan); ; span = Math.ceil(span / 2)) {
+      try {
+        return await fetchHour(hour, span);
+      } catch (e) {
+        if (!(e instanceof HspTimeoutError)) throw e;
+        timedOut = true;
+        if (span <= MIN_SPAN_MINUTES || expired()) throw e;
+      }
+    }
+  };
+
+  // Nothing known about this route: probe its likely-busiest hour first.
+  if (pending.every((h) => !known.has(h)) && pending.length > 1) {
+    const probe = PROBE_HOURS.find((h) => pending.includes(h)) ?? pending[0];
+    if (expired()) return partial();
+    let row: HourCounts;
+    try {
+      row = await fetchHourAdaptive(probe);
+    } catch (e) {
+      if (e instanceof HspTimeoutError && expired()) return partial();
+      throw e;
+    }
+    fallbackDensity = Math.max(1, row.services);
+    pending.splice(pending.indexOf(probe), 1);
+    await land([row]);
+  }
+  const density = (h: number) => known.get(h) ?? fallbackDensity ?? 20;
+
+  let i = 0;
+  while (i < pending.length) {
+    if (expired()) return partial();
+
+    // Grow a chunk of contiguous hours until it would exceed the target.
+    let j = i + 1;
+    let est = density(pending[i]);
+    while (
+      j < pending.length &&
+      j - i < maxLen &&
+      pending[j] === pending[j - 1] + 1 &&
+      est + density(pending[j]) <= target
+    ) {
+      est += density(pending[j]);
+      j++;
+    }
+    const chunk = pending.slice(i, j);
+
+    if (chunk.length === 1) {
+      try {
+        await land([await fetchHourAdaptive(chunk[0])]);
+      } catch (e) {
+        if (e instanceof HspTimeoutError && expired()) return partial();
+        throw e;
+      }
+    } else {
+      try {
+        const services = await fetchWindow(
+          from,
+          to,
+          range,
+          `${pad(chunk[0])}00`,
+          `${pad(chunk[chunk.length - 1])}59`,
+          timeoutMs
+        );
+        await land(bucketByHour(services, chunk));
+      } catch (e) {
+        if (!(e instanceof HspTimeoutError)) throw e;
+        // Denser than expected: retry this stretch in smaller chunks.
+        timedOut = true;
+        maxLen = Math.ceil(chunk.length / 2);
+        continue;
+      }
+    }
+    i = j;
+  }
+  return { rows: out, complete: true, timedOut };
 }
 
 /** Map HSP TOC codes to operator names, in the order given, unknowns dropped. */
@@ -239,7 +405,3 @@ export const TOC_NAMES: Record<string, string> = {
   XC: "CrossCountry",
   XR: "Elizabeth Line",
 };
-
-function round1(x: number): number {
-  return Math.round(x * 10) / 10;
-}

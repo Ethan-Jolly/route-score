@@ -1,17 +1,20 @@
 /**
  * Neon Postgres data layer.
  *
- * This is the permanent cache and history store for route performance. HSP
- * only holds ~1 year and is slow (~22s/call), so every route-month we ever
- * fetch is written here once and never fetched again — which also lets the
- * app accumulate history beyond HSP's rolling window over time.
+ * This is the permanent store for route performance. HSP only holds ~1 year
+ * and is slow, so everything fetched is written here and served from here —
+ * which also lets the app accumulate history beyond HSP's rolling window.
  *
- * Activated by DATABASE_URL. Without it, the app still works (direct HSP or
- * demo), just without caching or history.
+ * Performance is stored as raw counts per route, month and departure hour
+ * (`hourly_metrics`). Any time band is a sum over its hours, so one fetch
+ * serves all bands, and partial progress on a busy route is never lost.
+ *
+ * Activated by DATABASE_URL. Without it, the app runs in demo mode.
  */
 
 import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
-import type { MonthlyMetrics, TimeBand } from "./types";
+import type { TimeBand } from "./types";
+import type { HourCounts } from "./hsp";
 
 export function dbConfigured(): boolean {
   return Boolean(process.env.DATABASE_URL);
@@ -45,12 +48,13 @@ async function withRetry<T>(fn: () => Promise<T>, tries = 3): Promise<T> {
   throw lastErr;
 }
 
-/** A cached month row. `noService` marks a route-month HSP confirmed empty,
- * so we don't keep re-querying dead station pairs. */
-export interface CachedMonth extends MonthlyMetrics {
-  tocCodes: string[];
-  noService: boolean;
-  source: "hsp" | "demo";
+/** One stored hour of a route-month. */
+export interface HourRow extends HourCounts {
+  period: string;
+  /** Last date the counts cover (YYYY-MM-DD). */
+  throughDate: string;
+  /** True once fetched after the month had ended — never needs refreshing. */
+  final: boolean;
 }
 
 // Run schema creation at most once per process.
@@ -63,20 +67,20 @@ export function ensureSchema(): Promise<void> {
 async function createSchema(): Promise<void> {
   const sql = db();
   await withRetry(() => sql`
-    CREATE TABLE IF NOT EXISTS monthly_metrics (
-      from_crs        TEXT    NOT NULL,
-      to_crs          TEXT    NOT NULL,
-      band            TEXT    NOT NULL,
-      month           TEXT    NOT NULL,
-      total_trains    INTEGER NOT NULL DEFAULT 0,
-      on_time_pct     REAL    NOT NULL DEFAULT 0,
-      reliability_pct REAL    NOT NULL DEFAULT 0,
-      avg_delay_mins  REAL    NOT NULL DEFAULT 0,
-      toc_codes       TEXT    NOT NULL DEFAULT '',
-      no_service      BOOLEAN NOT NULL DEFAULT FALSE,
-      source          TEXT    NOT NULL DEFAULT 'hsp',
-      fetched_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-      PRIMARY KEY (from_crs, to_crs, band, month)
+    CREATE TABLE IF NOT EXISTS hourly_metrics (
+      from_crs     TEXT     NOT NULL,
+      to_crs       TEXT     NOT NULL,
+      period       TEXT     NOT NULL,
+      hour         SMALLINT NOT NULL,
+      trains       INTEGER  NOT NULL DEFAULT 0,
+      within5      INTEGER  NOT NULL DEFAULT 0,
+      within30     INTEGER  NOT NULL DEFAULT 0,
+      services     INTEGER  NOT NULL DEFAULT 0,
+      toc_codes    TEXT     NOT NULL DEFAULT '',
+      through_date TEXT     NOT NULL,
+      final        BOOLEAN  NOT NULL DEFAULT FALSE,
+      fetched_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (from_crs, to_crs, period, hour)
     )
   `);
   await withRetry(() => sql`
@@ -91,98 +95,135 @@ async function createSchema(): Promise<void> {
   `);
 }
 
-function rowToCached(r: Record<string, unknown>): CachedMonth {
+function rowToHour(r: Record<string, unknown>): HourRow {
   return {
-    month: r.month as string,
-    totalTrains: Number(r.total_trains),
-    onTimePct: Number(r.on_time_pct),
-    reliabilityPct: Number(r.reliability_pct),
-    avgDelayMins: Number(r.avg_delay_mins),
+    period: r.period as string,
+    hour: Number(r.hour),
+    trains: Number(r.trains),
+    within5: Number(r.within5),
+    within30: Number(r.within30),
+    services: Number(r.services),
     tocCodes: (r.toc_codes as string) ? (r.toc_codes as string).split(",") : [],
-    noService: Boolean(r.no_service),
-    source: (r.source as "hsp" | "demo") ?? "hsp",
+    throughDate: r.through_date as string,
+    final: Boolean(r.final),
   };
 }
 
-export async function getCachedMonths(
+/** Every stored hour of a route for the given periods. */
+export async function getHourRows(
   from: string,
   to: string,
-  band: TimeBand,
-  months: string[]
-): Promise<Map<string, CachedMonth>> {
+  periods: string[]
+): Promise<HourRow[]> {
   const sql = db();
   const rows = (await withRetry(
     () => sql`
-      SELECT * FROM monthly_metrics
-      WHERE from_crs = ${from} AND to_crs = ${to} AND band = ${band}
-        AND month = ANY(${months})
+      SELECT * FROM hourly_metrics
+      WHERE from_crs = ${from} AND to_crs = ${to} AND period = ANY(${periods})
     `
   )) as Record<string, unknown>[];
-  const out = new Map<string, CachedMonth>();
-  for (const r of rows) out.set(r.month as string, rowToCached(r));
-  return out;
+  return rows.map(rowToHour);
 }
 
-export async function upsertMonths(
+/** Write (or replace) hours of one route-month in a single statement. */
+export async function upsertHourRows(
   from: string,
   to: string,
-  band: TimeBand,
-  months: CachedMonth[]
+  period: string,
+  rows: HourCounts[],
+  throughDate: string,
+  final: boolean
 ): Promise<void> {
-  if (months.length === 0) return;
+  if (rows.length === 0) return;
   const sql = db();
-  await withRetry(() =>
-    Promise.all(
-      months.map(
-        (m) => sql`
-        INSERT INTO monthly_metrics
-          (from_crs, to_crs, band, month, total_trains, on_time_pct,
-           reliability_pct, avg_delay_mins, toc_codes, no_service, source, fetched_at)
-        VALUES
-          (${from}, ${to}, ${band}, ${m.month}, ${m.totalTrains}, ${m.onTimePct},
-           ${m.reliabilityPct}, ${m.avgDelayMins}, ${m.tocCodes.join(",")},
-           ${m.noService}, ${m.source}, now())
-        ON CONFLICT (from_crs, to_crs, band, month) DO UPDATE SET
-          total_trains = EXCLUDED.total_trains,
-          on_time_pct = EXCLUDED.on_time_pct,
-          reliability_pct = EXCLUDED.reliability_pct,
-          avg_delay_mins = EXCLUDED.avg_delay_mins,
-          toc_codes = EXCLUDED.toc_codes,
-          no_service = EXCLUDED.no_service,
-          source = EXCLUDED.source,
-          fetched_at = now()
-      `
-      )
-    )
+  await withRetry(
+    () => sql`
+      INSERT INTO hourly_metrics
+        (from_crs, to_crs, period, hour, trains, within5, within30, services,
+         toc_codes, through_date, final, fetched_at)
+      SELECT ${from}, ${to}, ${period}, t.hour, t.trains, t.within5, t.within30,
+             t.services, t.toc_codes, ${throughDate}, ${final}, now()
+      FROM unnest(
+        ${rows.map((r) => r.hour)}::smallint[],
+        ${rows.map((r) => r.trains)}::int[],
+        ${rows.map((r) => r.within5)}::int[],
+        ${rows.map((r) => r.within30)}::int[],
+        ${rows.map((r) => r.services)}::int[],
+        ${rows.map((r) => r.tocCodes.join(","))}::text[]
+      ) AS t(hour, trains, within5, within30, services, toc_codes)
+      ON CONFLICT (from_crs, to_crs, period, hour) DO UPDATE SET
+        trains = EXCLUDED.trains,
+        within5 = EXCLUDED.within5,
+        within30 = EXCLUDED.within30,
+        services = EXCLUDED.services,
+        toc_codes = EXCLUDED.toc_codes,
+        through_date = EXCLUDED.through_date,
+        final = EXCLUDED.final,
+        fetched_at = now()
+    `
   );
 }
 
+/** How much of one route-month is stored. */
+export interface PeriodCoverage {
+  /** Hours stored (24 = whole day). */
+  hours: number;
+  /** Hours stored and final. */
+  finalHours: number;
+  /** Oldest through-date among the stored hours. */
+  through: string;
+}
+
 /**
- * How many of the given months are cached for each route in a band, keyed
- * `"FROM>TO"`. Used by the backfill to find routes that still need warming
- * without a per-route round-trip. Counts noService rows too (they're "done").
+ * Coverage of every route for the given periods, keyed `"FROM>TO"` then
+ * period. Lets the ingest plan its work in one query instead of one per route.
  */
-export async function getRouteMonthCounts(
-  band: TimeBand,
-  months: string[]
-): Promise<Map<string, number>> {
+export async function getCoverage(
+  periods: string[]
+): Promise<Map<string, Map<string, PeriodCoverage>>> {
   const sql = db();
   const rows = (await withRetry(
     () => sql`
-      SELECT from_crs, to_crs, COUNT(*) AS n
-      FROM monthly_metrics
-      WHERE band = ${band} AND month = ANY(${months})
-      GROUP BY from_crs, to_crs
+      SELECT from_crs, to_crs, period,
+             COUNT(*)::int                       AS hours,
+             COUNT(*) FILTER (WHERE final)::int  AS final_hours,
+             MIN(through_date)                   AS through
+      FROM hourly_metrics
+      WHERE period = ANY(${periods})
+      GROUP BY from_crs, to_crs, period
     `
   )) as Record<string, unknown>[];
-  const out = new Map<string, number>();
+  const out = new Map<string, Map<string, PeriodCoverage>>();
   for (const r of rows) {
-    out.set(`${r.from_crs as string}>${r.to_crs as string}`, Number(r.n));
+    const key = `${r.from_crs as string}>${r.to_crs as string}`;
+    if (!out.has(key)) out.set(key, new Map());
+    out.get(key)!.set(r.period as string, {
+      hours: Number(r.hours),
+      finalHours: Number(r.final_hours),
+      through: r.through as string,
+    });
   }
   return out;
 }
 
-/** Fire-and-forget popularity counter used to drive cron pre-warming. */
+/** Most services ever seen per departure hour of a route — sizes HSP calls. */
+export async function getServiceHint(
+  from: string,
+  to: string
+): Promise<Map<number, number>> {
+  const sql = db();
+  const rows = (await withRetry(
+    () => sql`
+      SELECT hour, MAX(services)::int AS services
+      FROM hourly_metrics
+      WHERE from_crs = ${from} AND to_crs = ${to}
+      GROUP BY hour
+    `
+  )) as Record<string, unknown>[];
+  return new Map(rows.map((r) => [Number(r.hour), Number(r.services)]));
+}
+
+/** Fire-and-forget popularity counter; the ingest keeps looked-up routes fresh. */
 export async function recordLookup(
   from: string,
   to: string,
@@ -207,56 +248,56 @@ export interface PopularRoute {
   lookups: number;
 }
 
-/** One route's period-aggregate performance, ready for scoring/ranking. */
+/** One route's raw totals over a set of periods, ready for scoring/ranking. */
 export interface RouteAggregate {
   from: string;
   to: string;
-  band: TimeBand;
-  onTimePct: number;
-  reliabilityPct: number;
-  avgDelayMins: number;
-  totalTrains: number;
+  trains: number;
+  within5: number;
+  within30: number;
+  /** Months with actual service that had every requested hour stored. */
   months: number;
 }
 
 /**
- * Train-weighted aggregate of every cached route for a band, for the
- * leaderboard. Only real HSP data with actual service is considered, and a
- * route needs `minMonths` of coverage to qualify (so a single freshly-warmed
- * month can't top the board). Scoring/ranking happens in TS via compositeScore.
+ * Totals for every route over the given hours and periods, for the
+ * leaderboard. A month only counts when all the requested hours are stored
+ * (so a half-fetched month can't skew a route), and a route needs `minMonths`
+ * of real service to qualify.
  */
 export async function getRouteAggregates(
-  band: TimeBand,
+  hours: number[],
+  periods: string[],
   minMonths = 6
 ): Promise<RouteAggregate[]> {
   const sql = db();
   const rows = (await withRetry(
     () => sql`
-      SELECT
-        from_crs,
-        to_crs,
-        SUM(total_trains)                                            AS total_trains,
-        SUM(on_time_pct     * total_trains) / SUM(total_trains)      AS on_time_pct,
-        SUM(reliability_pct * total_trains) / SUM(total_trains)      AS reliability_pct,
-        SUM(avg_delay_mins  * total_trains) / SUM(total_trains)      AS avg_delay_mins,
-        COUNT(*)                                                     AS months
-      FROM monthly_metrics
-      WHERE band = ${band}
-        AND source = 'hsp'
-        AND no_service = FALSE
-        AND total_trains > 0
+      SELECT from_crs, to_crs,
+             SUM(trains)::int                        AS trains,
+             SUM(within5)::int                       AS within5,
+             SUM(within30)::int                      AS within30,
+             COUNT(*) FILTER (WHERE trains > 0)::int AS months
+      FROM (
+        SELECT from_crs, to_crs, period,
+               SUM(trains)   AS trains,
+               SUM(within5)  AS within5,
+               SUM(within30) AS within30
+        FROM hourly_metrics
+        WHERE hour = ANY(${hours}) AND period = ANY(${periods})
+        GROUP BY from_crs, to_crs, period
+        HAVING COUNT(*) = ${hours.length}
+      ) m
       GROUP BY from_crs, to_crs
-      HAVING COUNT(*) >= ${minMonths} AND SUM(total_trains) > 0
+      HAVING COUNT(*) FILTER (WHERE trains > 0) >= ${minMonths}
     `
   )) as Record<string, unknown>[];
   return rows.map((r) => ({
     from: r.from_crs as string,
     to: r.to_crs as string,
-    band,
-    onTimePct: Number(r.on_time_pct),
-    reliabilityPct: Number(r.reliability_pct),
-    avgDelayMins: Number(r.avg_delay_mins),
-    totalTrains: Number(r.total_trains),
+    trains: Number(r.trains),
+    within5: Number(r.within5),
+    within30: Number(r.within30),
     months: Number(r.months),
   }));
 }
@@ -266,7 +307,7 @@ export async function getPopularRoutes(limit = 50): Promise<PopularRoute[]> {
   const rows = (await withRetry(
     () => sql`
       SELECT from_crs, to_crs, band, lookups FROM route_lookups
-      ORDER BY lookups DESC, last_seen DESC
+      ORDER BY last_seen DESC, lookups DESC
       LIMIT ${limit}
     `
   )) as Record<string, unknown>[];

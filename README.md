@@ -26,28 +26,92 @@ Open http://localhost:3000.
 
 ## Data sources & modes
 
-The app resolves a route's data from the best source available, controlled by
-two things in `.env.local`:
-
 | Env | Effect |
 |---|---|
 | `HSP_EMAIL` + `HSP_PASSWORD` | Use **live** National Rail HSP data. Without them, **demo** mode (deterministic synthetic data) runs. |
-| `DATABASE_URL` (Neon Postgres) | Cache HSP results permanently and accumulate history. Without it, live mode still works but re-fetches every time. |
+| `DATABASE_URL` (Neon Postgres) | Where everything fetched from HSP is stored. Live data needs it; without it the app stays in demo mode. |
 
-### Why the database matters
+## How data gets in
 
-HSP is slow (~15–25s per monthly query) and only holds a rolling ~1 year of
-history. The DB solves both:
+The site only ever **reads** from Postgres. Getting data out of HSP is a
+separate job, because of how HSP behaves (measured October 2026):
 
-- **Cache:** every route-month is fetched from HSP exactly once, ever, then
-  served from Postgres forever after. The first load of a brand-new route
-  takes ~25s (a skeleton covers the wait); every load after is instant.
-- **History:** because we never delete old months, the app accumulates
-  performance history *beyond* HSP's 1-year window from day one — a moat that
-  grows on its own.
+- A call costs roughly **1–1.7 seconds per distinct timetabled service** it
+  returns. The date range is almost free; the time-of-day window is what costs.
+- HSP's own gateway gives up at **120 seconds**. A busy route can never be
+  fetched "all day" in one call (London Waterloo → Woking has ~270 services a
+  day), whatever the date range.
+- More than **~4 concurrent calls** per account are rejected with 503.
+- Data is available about **a day** after the trains ran.
 
-Concurrency note: HSP tolerates parallel requests without throttling, so a cold
-route fires all 12 missing months at once (~25s total, not 12×25s).
+So the design is:
+
+- **Hourly storage.** Performance is stored as raw counts per route, month and
+  departure hour (`hourly_metrics`). HSP calls are sliced by hour — sized from
+  how many services each hour is known to hold, and halved on timeout — and
+  results are bucketed by scheduled departure time. Every time band is then
+  just a sum over its hours, so one fetch serves all four bands.
+- **A standalone ingest** (`scripts/ingest.ts`) talks to HSP and Postgres
+  directly. It runs on a schedule in GitHub Actions, or locally. It is fully
+  resumable: every chunk is stored as it lands and each run re-plans from
+  what's stored.
+- **Month-to-date.** A score covers the 12 complete months **plus the month in
+  progress**, re-fetched as it grows, so scores are typically a day or two
+  behind the railway rather than up to a month. Rows for a month become
+  `final` once fetched after the month has ended; until then they are a
+  snapshot through `through_date` and get refreshed.
+- **On-demand fill for new routes.** A route nobody has looked up before shows
+  a warming screen that drives `/api/route-score/fill` in short, time-boxed
+  steps (each well inside the 60s function limit). A quiet route takes under a
+  minute; a very busy one several minutes. The first step registers the route
+  with the ingest, which finishes it in the background if the visitor leaves.
+
+Because old months are never deleted, the database also accumulates history
+beyond HSP's rolling one-year window.
+
+### Running the ingest
+
+```bash
+npm run ingest                          # 50-minute run, reads .env.local
+npm run ingest -- --minutes=600         # long run, e.g. overnight for the first fill
+npm run ingest -- --routes=KGX-EDB      # only these curated routes
+npm run ingest -- --dry-run             # print the plan, fetch nothing
+```
+
+Needs Node 22.18+ (it runs the TypeScript directly). `HSP_CONCURRENCY`
+(default 2) sets how many HSP calls run at once — the account's ~4 are shared
+with the live site, so don't run two ingests at the same time.
+
+Each run works in this order:
+
+1. **Looked-up routes** — whatever visitors have asked for, in their bands:
+   missing months, plus the month-to-date if it's behind.
+2. **Refresh** — routes already on the leaderboard: month-to-date and
+   just-ended months, stalest first.
+3. **Fill** — curated routes still missing months, newest six months first (so
+   a route reaches the leaderboard sooner), then the older six.
+
+While there is still filling to do, refresh gets at most 30% of the run.
+
+A run that had work to do and stored nothing exits non-zero, so a broken
+ingest shows up red in GitHub Actions instead of passing silently.
+
+### Scheduled ingest (GitHub Actions)
+
+`.github/workflows/ingest.yml` runs the ingest daily for 50 minutes. Add these
+repository secrets (Settings → Secrets and variables → Actions): `HSP_EMAIL`,
+`HSP_PASSWORD`, `DATABASE_URL`.
+
+A private repo gets 2,000 free Actions minutes a month; one 50-minute run a day
+uses about 1,600. You can start a longer run by hand from the Actions tab
+(`minutes` input, up to ~340).
+
+**Scale.** The curated universe is ~1,000 routes × 12 months. A route-month
+costs about 1.3s per timetabled service: roughly a minute for a quiet
+intercity route, about six minutes for the busiest commuter routes. The first
+fill is therefore long — do it with a few overnight local runs
+(`npm run ingest -- --minutes=600`) rather than waiting on the daily schedule.
+Afterwards the daily run only has refreshing to do.
 
 ### Live-data approximations (worth knowing)
 
@@ -57,10 +121,9 @@ cancellation counts, no exact lateness minutes. So in live mode:
 - **Reliability** ≈ % of trains within 30 minutes.
 - **Average delay** is estimated from bucket midpoints (5–30 min late ≈ 12
   min, 30+ min ≈ 40 min).
+- Only **weekday** services are counted.
 
-The score formula itself is exactly as specified. Exact cancellation/delay
-figures would need per-train `serviceDetails` calls (thousands per route) — a
-background-aggregator job for a later phase, noted in the code.
+The score formula itself is exactly as specified.
 
 ## The score
 
@@ -71,119 +134,50 @@ delay_score        = max(0, 100 − avg_delay_mins × 5)  (weight 15%)
 route_score        = weighted sum, 0–100
 ```
 
+Time bands are sums of departure hours: AM peak 06:00–08:59, off-peak
+09:00–15:59, PM peak 16:00–18:59, all day 00:00–23:59.
+
 Trend arrow compares the latest 3-month moving average against the previous one
-(±2 points = improving/degrading, else stable).
+(±2 points = improving/degrading, else stable). The month in progress joins the
+trend once it has enough trains to be a fair point next to full months.
 
 ## URLs
 
 | Path | What |
 |---|---|
-| `/` | Homepage: search + example score cards (served from cache, fast path) |
+| `/` | Homepage: search + example score cards (stored routes only) |
 | `/route/BTN-LBG?band=am-peak` | Full dashboard (band tabs, breakdown, trend, context) |
 | `/score/BTN-LBG-am-peak` | Shareable score card, ISR-cached daily, with a dynamically rendered Open Graph image so pasted links preview as the card itself |
-| `/leaderboard` | Best/worst routes, toggleable between the whole UK and London only (see below) |
-| `/api/route-score?from=BTN&to=LBG&band=am-peak` | JSON API |
+| `/leaderboard` | Best/worst routes, toggleable between the whole UK and London only |
+| `/api/route-score?from=BTN&to=LBG&band=am-peak` | JSON API. 200 with the score, or 202 `{ warming, cached, total }` while a new route is being fetched — repeat to continue |
+| `/api/route-score/fill` | One time-boxed fill step for a new route (used by the warming screen) |
 | `/api/stations?q=brig` | Station search API (autocomplete also runs client-side) |
-| `/api/cron/warm` | Nightly warm job (see below) |
-| `/api/cron/backfill` | Leaderboard backfill job (see below) |
 
 Routes with no direct trains return a friendly "no direct service" page, not an
 error — Route Score rates direct journeys only.
 
-## Nightly warm cron
-
-`vercel.json` schedules `GET /api/cron/warm` daily at 05:00 UTC. It refreshes
-the most recent complete month for the 20 most-looked-up routes (tracked in the
-`route_lookups` table), so as the 12-month window slides forward, popular routes
-stay current and returning visitors never hit a cold fetch.
-
-Protect it in production by setting **`CRON_SECRET`** — Vercel Cron sends it as
-`Authorization: Bearer …`; the endpoint rejects mismatches. Locally (no secret
-set) it's open so you can hit it directly.
-
-## Leaderboard & backfill
+## Leaderboard
 
 `/leaderboard` ranks the best and worst-performing routes, toggleable between
 the whole UK and London-only. Rankings are drawn from a **curated universe** of
 ~1,000 real routes in `lib/routes.ts` (every London terminal against the real
 destinations on its lines, plus the major UK intercity city pairs, both
 directions). All use the `all-day` band so scores are directly comparable, and
-a route needs ≥6 cached months of real service to appear.
-
-We can't fetch all ~6.7M station pairs from HSP, so the leaderboard and the warm
-cache are seeded from this set by the **backfill job**. It's fully resumable:
-each run recomputes what's still missing and fetches only that, persisting every
-wave, so you can stop and restart it freely. Because HSP has a sustained session
-rate limit (see below), a run stops early and reports `throttled: true` the
-moment a whole wave of calls fails.
-
-### Running the backfill
-
-The one-time populate is best driven locally. With the dev server running in one
-terminal (`npm run dev`), run the driver in another:
-
-```bash
-npm run backfill
-```
-
-It loops the endpoint a few HSP calls at a time, pausing between requests and
-backing off ~10 min whenever HSP throttles, until every route is warmed. Options
-(all optional):
-
-```bash
-node scripts/backfill.mjs \
-  --url=http://localhost:3000 \  # target server (default localhost:3000)
-  --calls=9 \                    # HSP calls per request (server clamps to 60)
-  --pause=5 \                    # seconds between requests
-  --backoff=600                  # seconds to wait after a throttle
-```
-
-To backfill a deployed instance instead, point `--url` at it and export
-`CRON_SECRET` to match the server (sent as `Authorization: Bearer …`):
-
-```bash
-CRON_SECRET=... node scripts/backfill.mjs --url=https://your-app.vercel.app
-```
-
-**Scale & pacing.** ~1,000 routes × ~12 months ≈ 12k HSP calls. At HSP's
-~15–25s per call under its concurrency cap (~3–4) and sustained session quota,
-the full first backfill runs over **days to a couple of weeks** — but it's
-resumable and the leaderboard starts filling as soon as any route reaches 6
-months. Steady-state upkeep afterward is tiny (one new month per route per
-month) as the 12-month window slides.
-
-### Backfill cron
-
-`vercel.json` also schedules `GET /api/cron/backfill` (`0 2 * * *`, daily at
-02:00 UTC) for ongoing top-up — a small `?calls=` budget per run that fits
-inside `maxDuration`. This is set to once daily to stay within the **Vercel
-Hobby** limit (crons run at most once per day); the heavy initial fill is done
-with `npm run backfill` locally. On **Pro** you can run it far more often (e.g.
-`15,45 1-4 * * *`) so steady-state upkeep keeps pace on its own. It shares
-`CRON_SECRET` with the warm job for auth.
-
-`.github/workflows/backfill.yml` pokes the same endpoint every 30 min from
-GitHub Actions to get around the Hobby once-a-day limit. It uses `?calls=3`
-(one HSP wave, ~25s) to stay well inside the 60s `maxDuration`, and treats a
-504 as a warning rather than a failure — each wave is persisted before the
-timeout, so the next run just resumes.
+a route needs ≥6 fully stored months of real service to appear.
 
 ## Deploying to Vercel
 
-1. **Push to GitHub.** From the project root:
-   ```bash
-   git init && git add -A && git commit -m "Route Score MVP"
-   gh repo create route-score --private --source=. --push   # or push manually
-   ```
+1. **Push to GitHub.**
 2. **Import** the repo at https://vercel.com/new.
 3. **Environment variables** (Project → Settings → Environment Variables):
    - `HSP_EMAIL`, `HSP_PASSWORD` — your National Rail Data Portal login.
    - `DATABASE_URL` — auto-added if you provision Neon via Vercel's Storage
      tab; otherwise paste your Neon connection string.
-   - `CRON_SECRET` — any long random string.
    - `NEXT_PUBLIC_SITE_URL` — your production URL (e.g. `https://routescore.app`)
      so Open Graph image links resolve absolutely.
-4. **Deploy.** The DB schema is created automatically on first request.
+4. **Add the same three data secrets to GitHub Actions** (see above) so the
+   scheduled ingest can run.
+5. **Deploy.** The DB schema is created automatically on first use.
 
 ## Station reference data
 
@@ -199,23 +193,23 @@ node scripts/build-stations.mjs
 - **Next.js 15 App Router, TypeScript, Tailwind CSS 4.** No chart library —
   the score dial and trend chart are hand-rolled SVG (smaller bundle, custom
   design, CSS-animated), with a `prefers-reduced-motion` fallback.
-- All data access goes through `lib/provider.ts`:
-  - `getRouteScore()` — full read-through (DB → HSP → DB), cold-tolerant.
-  - `getCachedRouteScore()` — DB-only fast path, never calls HSP; used where a
-    slow fetch would be unacceptable (homepage).
-- `lib/db.ts` (Neon serverless Postgres) is the cache + history store;
-  `lib/hsp.ts` is the HSP client; `lib/demo.ts` is the synthetic fallback.
-- Cold routes stream a skeleton via `loading.tsx`; pages set `maxDuration = 60`
-  so the ~25s fetch fits inside the serverless timeout.
-- HSP credentials never leave the server — only server components and API
-  routes call the provider.
+- All page data goes through `lib/provider.ts`:
+  - `getCachedRouteScore()` — DB-only, never calls HSP; used by every page.
+  - `fillRouteStep()` — one time-boxed on-demand fill step for a new route.
+  - `getRouteScore()` — the JSON API's read (DB, plus one fill step if needed).
+- `lib/hsp.ts` is the HSP client (hour slicing, timeouts, concurrency gate);
+  `lib/db.ts` (Neon serverless Postgres) is the store; `lib/periods.ts` decides
+  which dates a month covers right now; `lib/demo.ts` is the synthetic fallback.
+- HSP credentials never leave the server — only server code and the ingest
+  script use them.
 - Product analytics via `@vercel/analytics` (validates the core MVP question:
   do people care?).
 
 ## Helper scripts
 
+- `npm run ingest` (`scripts/ingest.ts`) — fill and refresh stored data (see above).
+- `node --env-file=.env.local scripts/db-status.mjs [FROM-TO]` — what's stored.
 - `node scripts/db-test.mjs` — verify the Neon connection.
 - `node scripts/build-stations.mjs` — regenerate the station list.
-- `npm run backfill` (`scripts/backfill.mjs`) — warm the leaderboard cache (see above).
 - `npm run validate:routes` (`scripts/validate-routes.mjs`) — check every CRS in
   the curated route universe exists in `stations.json`.

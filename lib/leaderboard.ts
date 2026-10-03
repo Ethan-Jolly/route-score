@@ -1,7 +1,9 @@
 /**
  * Builds the best/worst leaderboards from cached route data.
  *
- * Ranking is over the curated universe (lib/routes.ts) that the backfill warms.
+ * Ranking is over the curated universe (lib/routes.ts) that the ingest fills,
+ * scored on the same window as a route page: the 12 complete months plus the
+ * month in progress.
  * The UK board is national; the London board is the subset touching a London
  * terminal. A route needs enough months and enough weekly service to qualify,
  * so the boards reflect real, well-travelled routes rather than statistical
@@ -12,8 +14,9 @@
  * viewable in local dev.
  */
 
-import { compositeScore, verdictFor } from "./score";
-import { dbConfigured, ensureSchema, getRouteAggregates, type RouteAggregate } from "./db";
+import { BAND_HOURS, compositeScore, last12Months, metricsFromCounts, verdictFor } from "./score";
+import { dbConfigured, ensureSchema, getRouteAggregates } from "./db";
+import { currentMonth } from "./periods";
 import { hspConfigured } from "./hsp";
 import { demoMonthlyMetrics } from "./demo";
 import { CURATED_ROUTES, LEADERBOARD_BAND, isLondonTerminal } from "./routes";
@@ -48,6 +51,18 @@ export interface Leaderboard {
   qualified: number;
   /** "hsp" once real data is flowing, "demo" in local dev without a DB. */
   source: "hsp" | "demo";
+}
+
+/** One route's period-aggregate performance, ready for scoring/ranking. */
+interface RouteAggregate {
+  from: string;
+  to: string;
+  band: TimeBand;
+  onTimePct: number;
+  reliabilityPct: number;
+  avgDelayMins: number;
+  totalTrains: number;
+  months: number;
 }
 
 const WEEKDAYS_PER_MONTH = 21.5;
@@ -143,6 +158,18 @@ export async function getLeaderboard(size = 10): Promise<Leaderboard> {
     return assemble(demoAggregates(), "demo", size);
   }
   await ensureSchema();
-  const aggregates = await getRouteAggregates(LEADERBOARD_BAND, MIN_MONTHS);
+  const totals = await getRouteAggregates(
+    BAND_HOURS[LEADERBOARD_BAND],
+    [...last12Months(), currentMonth()],
+    MIN_MONTHS
+  );
+  const aggregates = totals.map((t) => ({
+    from: t.from,
+    to: t.to,
+    band: LEADERBOARD_BAND,
+    ...metricsFromCounts(t.trains, t.within5, t.within30),
+    totalTrains: t.trains,
+    months: t.months,
+  }));
   return assemble(aggregates, "hsp", size);
 }

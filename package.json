@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "backfill": "node scripts/backfill.mjs",
+    "ingest": "node --env-file-if-exists=.env.local scripts/ingest.ts",
     "validate:routes": "node scripts/validate-routes.mjs"
   },
   "dependencies": {

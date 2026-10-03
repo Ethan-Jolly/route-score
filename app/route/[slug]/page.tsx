@@ -134,6 +134,13 @@ export default async function RoutePage(props: Props) {
           <p className="mt-2 text-sm text-slate-500">
             Based on {result.totalTrains.toLocaleString("en-GB")} services over
             the past 12 months
+            {result.dataThrough &&
+              `, up to ${new Date(result.dataThrough).toLocaleDateString("en-GB", {
+                day: "numeric",
+                month: "short",
+                year: "numeric",
+                timeZone: "UTC",
+              })}`}
             {result.limitedData && (
               <span className="ml-2 inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700">
                 Limited data — treat with caution

@@ -9,7 +9,7 @@ export const metadata: Metadata = {
     "The best and worst-performing UK rail routes, ranked by a year of real punctuality data. Filter to London commuter routes or the whole national network.",
 };
 
-// Data only changes when the backfill/warm crons run (nightly), so an hourly
+// Data only changes when the scheduled ingest runs (daily), so an hourly
 // rebuild is plenty and keeps the page fast.
 export const revalidate = 3600;
 
@@ -49,14 +49,14 @@ export default async function LeaderboardPage(props: Props) {
       {isDemo && (
         <p className="mt-4 rounded-lg bg-amber-50 border border-amber-200 px-4 py-2 text-xs text-amber-700">
           Showing <strong>demo data</strong> — connect HSP + a database and run
-          the backfill to populate real rankings.
+          the ingest to populate real rankings.
         </p>
       )}
 
       {!hasData ? (
         <p className="mt-10 rounded-xl border border-slate-200 bg-white p-6 text-slate-500">
           No routes have enough data yet. The leaderboard fills in as the
-          backfill job warms the route cache — check back soon.
+          ingest job works through the route list — check back soon.
         </p>
       ) : (
         <div className="mt-8 grid gap-8 lg:grid-cols-2">

@@ -1,37 +1,42 @@
 /**
- * Orchestrates a RouteScoreResult from the best available data source, with a
- * DB read-through cache in front of the (slow, rolling-window) HSP API.
+ * Orchestrates a RouteScoreResult from the best available data source.
  *
  * Resolution order for a route/band:
  *   1. Demo mode (no HSP creds): deterministic synthetic data, instant.
- *   2. HSP mode: read the 12 needed months from Postgres; fetch whatever is
- *      missing from HSP in parallel; write it back; assemble the score.
+ *   2. HSP mode: read the stored hours for the 12 complete months plus the
+ *      month in progress from Postgres and assemble the score from them.
  *
- * Because past months never change, a month is fetched from HSP exactly once
- * ever and served from the DB forever after — the first load of a brand-new
- * route is slow (~25s), every subsequent load is instant.
+ * The site never blocks a page on HSP. The scheduled ingest (scripts/ingest.ts)
+ * keeps the curated and looked-up routes filled and fresh; a route nobody has
+ * seen before is filled on demand in small, time-boxed steps driven by the
+ * client warming UI, each step persisting what it fetched.
  */
 
 import { demoMonthlyMetrics, demoOperators } from "./demo";
-import { fetchHspMonth, hspConfigured, tocNamesFor } from "./hsp";
+import { fetchHspHours, hspConfigured, tocNamesFor } from "./hsp";
 import {
   dbConfigured,
   ensureSchema,
-  getCachedMonths,
+  getHourRows,
+  getServiceHint,
   recordLookup,
-  upsertMonths,
-  type CachedMonth,
+  upsertHourRows,
+  type HourRow,
 } from "./db";
 import {
+  BAND_HOURS,
   aggregateMetrics,
   compositeScore,
   last12Months,
+  metricsFromCounts,
   monthlyScores,
   trendFor,
   verdictFor,
 } from "./score";
+import { currentMonth, periodRange } from "./periods";
 import { stationByCrs } from "./stations";
 import type {
+  MonthlyMetrics,
   NoServiceResult,
   RouteScoreResult,
   Station,
@@ -40,106 +45,227 @@ import type {
 
 type Outcome = RouteScoreResult | NoServiceResult | null;
 
-/**
- * HSP accepts only ~4 simultaneous requests per account (extras 503 instantly),
- * and each takes ~20s. So missing months are fetched in small concurrent waves
- * rather than all at once, and each wave is written to the DB as it lands —
- * meaning partial progress survives even if the request is cut short, and a
- * later call simply resumes.
- */
-const HSP_CONCURRENCY = 3;
+/** One month of a route/band, assembled from its stored hours. */
+export interface CachedMonth extends MonthlyMetrics {
+  tocCodes: string[];
+  /** No direct trains ran in this band that month. */
+  noService: boolean;
+  source: "hsp" | "demo";
+  /** The month in progress: counts run to `throughDate`, not month end. */
+  partial: boolean;
+  throughDate?: string;
+}
 
-/** Progress of filling a route's 12-month window from HSP. */
+/** Progress of filling a route's window from HSP, in stored hours. */
 export interface FillProgress {
   done: boolean;
   cached: number;
   total: number;
+  /** The step fetched nothing because calls were too big for its time box;
+   * the caller should retry with a smaller `maxSpanMinutes`. */
+  stalled: boolean;
 }
 
-/** Full read-through: serves from DB, fetching every missing month from HSP in
- * waves. May take up to ~90s the first time a route is seen (resumable across
- * calls); instant thereafter. Used by the JSON API. Pages use the progressive
- * fast-path (getCachedRouteScore) + client warming instead. */
+/** On-demand fills run inside a 60s serverless function, so each step stops
+ * starting HSP calls after the deadline and caps any single call's duration. */
+const STEP_DEADLINE_MS = 20_000;
+const STEP_CALL_TIMEOUT_MS = 28_000;
+/** Small calls (~15s) so a step always lands something. */
+const STEP_TARGET_SERVICES = 12;
+
+/** The periods a score is built from: 12 complete months, then the month in
+ * progress once it has at least one day HSP could know about. */
+function scoreWindow(): { closed: string[]; periods: string[] } {
+  const closed = last12Months();
+  const current = currentMonth();
+  return {
+    closed,
+    periods: periodRange(current) ? [...closed, current] : closed,
+  };
+}
+
+interface RouteState {
+  /** Periods whose every band hour is stored. */
+  months: Map<string, CachedMonth>;
+  /** Hours still to fetch, newest period first. */
+  missing: { period: string; hours: number[] }[];
+  stored: number;
+  needed: number;
+  /** Enough is stored to show a score: every complete month except possibly
+   * the newest (which the ingest may not have reached just after rollover). */
+  ready: boolean;
+}
+
+async function loadRoute(
+  from: Station,
+  to: Station,
+  band: TimeBand
+): Promise<RouteState> {
+  const { closed, periods } = scoreWindow();
+  const hours = BAND_HOURS[band];
+  const current = currentMonth();
+
+  const byPeriod = new Map<string, Map<number, HourRow>>();
+  for (const row of await getHourRows(from.crs, to.crs, periods)) {
+    if (!byPeriod.has(row.period)) byPeriod.set(row.period, new Map());
+    byPeriod.get(row.period)!.set(row.hour, row);
+  }
+
+  const months = new Map<string, CachedMonth>();
+  const missing: RouteState["missing"] = [];
+  let stored = 0;
+  for (const period of periods) {
+    const have = byPeriod.get(period) ?? new Map<number, HourRow>();
+    const rows = hours.map((h) => have.get(h)).filter((r): r is HourRow => !!r);
+    stored += rows.length;
+    if (rows.length < hours.length) {
+      missing.push({ period, hours: hours.filter((h) => !have.has(h)) });
+      continue;
+    }
+    const trains = rows.reduce((s, r) => s + r.trains, 0);
+    months.set(period, {
+      month: period,
+      totalTrains: trains,
+      ...metricsFromCounts(
+        trains,
+        rows.reduce((s, r) => s + r.within5, 0),
+        rows.reduce((s, r) => s + r.within30, 0)
+      ),
+      tocCodes: [...new Set(rows.flatMap((r) => r.tocCodes))],
+      noService: trains === 0,
+      source: "hsp",
+      partial: period === current,
+      throughDate: rows.reduce(
+        (min, r) => (r.throughDate < min ? r.throughDate : min),
+        rows[0].throughDate
+      ),
+    });
+  }
+
+  return {
+    months,
+    missing: missing.reverse(),
+    stored,
+    needed: periods.length * hours.length,
+    ready: closed.slice(0, -1).every((p) => months.has(p)),
+  };
+}
+
+/**
+ * JSON API read: serves from the DB, running one time-boxed fill step first if
+ * the route isn't stored yet. Returns `{ warming }` progress when more steps
+ * are needed — call again to continue. Pages use getCachedRouteScore plus the
+ * client warming UI instead.
+ */
 export async function getRouteScore(
   fromCrs: string,
   toCrs: string,
   band: TimeBand
-): Promise<Outcome> {
+): Promise<Outcome | { warming: FillProgress }> {
   const stations = resolveStations(fromCrs, toCrs);
   if (!stations) return null;
   const { from, to } = stations;
 
-  if (!hspConfigured()) {
+  if (!hspConfigured() || !dbConfigured()) {
     return assemble(from, to, band, demoCache(from.crs, to.crs, band));
   }
 
-  const cached = await fillFromHsp(from, to, band, Infinity);
-  return assemble(from, to, band, cached);
+  await ensureSchema();
+  let state = await loadRoute(from, to, band);
+  if (!state.ready) {
+    const progress = await fillStep(from, to, band, state);
+    state = await loadRoute(from, to, band);
+    if (!state.ready) return { warming: progress };
+  }
+  return assemble(from, to, band, state.months);
 }
 
 /**
- * Fetch up to `maxWaves` waves of missing months for a route, persisting each
- * wave. Returns how many of the 12 months are now cached. This is what the
- * client warming UI drives, a couple of waves at a time, to stay well under
- * the serverless timeout.
+ * Advance a cold route by one time-boxed step, persisting each chunk as it
+ * lands. This is what the client warming UI drives until `done`.
  */
 export async function fillRouteStep(
   fromCrs: string,
   toCrs: string,
   band: TimeBand,
-  maxWaves = 2
+  maxSpanMinutes?: number
 ): Promise<FillProgress | null> {
   const stations = resolveStations(fromCrs, toCrs);
   if (!stations) return null;
   const { from, to } = stations;
 
-  if (!hspConfigured()) {
-    return { done: true, cached: 12, total: 12 };
+  if (!hspConfigured() || !dbConfigured()) {
+    return { done: true, cached: 12, total: 12, stalled: false };
   }
 
-  const cached = await fillFromHsp(from, to, band, maxWaves);
-  const total = last12Months().length;
-  return { done: cached.size >= total, cached: cached.size, total };
+  await ensureSchema();
+  const state = await loadRoute(from, to, band);
+  return fillStep(from, to, band, state, maxSpanMinutes);
 }
 
-/** Shared core: read cache, fetch missing months from HSP in concurrency-
- * limited waves (persisting each), return the assembled month map. */
-async function fillFromHsp(
+/** Shared core: fetch as many of the route's missing hours as fit in one
+ * step, newest period first. */
+async function fillStep(
   from: Station,
   to: Station,
   band: TimeBand,
-  maxWaves: number
-): Promise<Map<string, CachedMonth>> {
-  const months = last12Months();
-  let cached = new Map<string, CachedMonth>();
-  if (dbConfigured()) {
-    await ensureSchema();
-    cached = await getCachedMonths(from.crs, to.crs, band, months);
+  state: RouteState,
+  maxSpanMinutes?: number
+): Promise<FillProgress> {
+  // Popularity signal: the ingest keeps looked-up routes fresh. Never block on it.
+  recordLookup(from.crs, to.crs, band).catch(() => {});
+
+  if (state.missing.length === 0) {
+    return { done: true, cached: state.stored, total: state.needed, stalled: false };
   }
 
-  const missing = months.filter((m) => !cached.has(m));
-  let waves = 0;
-  for (let i = 0; i < missing.length && waves < maxWaves; i += HSP_CONCURRENCY) {
-    const wave = missing.slice(i, i + HSP_CONCURRENCY);
-    const fetched = await Promise.all(
-      wave.map((m) => fetchHspMonth(from.crs, to.crs, band, m))
-    );
-    const rows: CachedMonth[] = fetched.map((f) => ({ ...f, source: "hsp" }));
-    if (dbConfigured()) await upsertMonths(from.crs, to.crs, band, rows);
-    for (const r of rows) cached.set(r.month, r);
-    waves++;
+  const deadline = Date.now() + STEP_DEADLINE_MS;
+  const hint = await getServiceHint(from.crs, to.crs);
+  let landed = 0;
+  let timedOut = false;
+
+  // A small pool rather than firing every period at once: queued work must
+  // not start after the deadline.
+  const queue = [...state.missing];
+  const worker = async () => {
+    for (let task = queue.shift(); task; task = queue.shift()) {
+      if (Date.now() >= deadline) return;
+      const { period, hours } = task;
+      const range = periodRange(period);
+      if (!range) continue;
+      const res = await fetchHspHours(from.crs, to.crs, range, hours, {
+        hint,
+        targetServices: STEP_TARGET_SERVICES,
+        timeoutMs: STEP_CALL_TIMEOUT_MS,
+        deadline,
+        maxSpanMinutes,
+        onChunk: async (rows) => {
+          await upsertHourRows(from.crs, to.crs, period, rows, range.to, range.final);
+          landed += rows.length;
+        },
+      });
+      if (res.timedOut) timedOut = true;
+    }
+  };
+  const results = await Promise.allSettled([worker(), worker()]);
+  // If nothing landed and HSP itself failed (not just "too slow"), surface it.
+  const failure = results.find((r) => r.status === "rejected");
+  if (landed === 0 && failure && !timedOut) {
+    throw (failure as PromiseRejectedResult).reason;
   }
 
-  if (dbConfigured()) {
-    // Popularity signal for cron pre-warming; never block on it.
-    recordLookup(from.crs, to.crs, band).catch(() => {});
-  }
-  return cached;
+  const cached = state.stored + landed;
+  return {
+    done: cached >= state.needed,
+    cached,
+    total: state.needed,
+    stalled: landed === 0,
+  };
 }
 
-/** DB-only fast path: returns a result only if all 12 months are already
- * cached, otherwise null. Never calls HSP. Used where a slow cold fetch would
- * be unacceptable (homepage examples). In demo mode this is just the score. */
+/** DB-only fast path: returns a result only if the route is already stored,
+ * otherwise null. Never calls HSP. Used by every page. In demo mode this is
+ * just the score. */
 export async function getCachedRouteScore(
   fromCrs: string,
   toCrs: string,
@@ -156,10 +282,9 @@ export async function getCachedRouteScore(
 
   try {
     await ensureSchema();
-    const months = last12Months();
-    const cached = await getCachedMonths(from.crs, to.crs, band, months);
-    if (months.some((m) => !cached.has(m))) return null;
-    return assemble(from, to, band, cached);
+    const state = await loadRoute(from, to, band);
+    if (!state.ready) return null;
+    return assemble(from, to, band, state.months);
   } catch {
     // A transient DB failure shouldn't 500 the page — degrade to "not cached"
     // (the caller shows the warming UI, which self-heals when the DB recovers).
@@ -184,7 +309,13 @@ function demoCache(
 ): Map<string, CachedMonth> {
   const map = new Map<string, CachedMonth>();
   for (const m of demoMonthlyMetrics(from, to, band)) {
-    map.set(m.month, { ...m, tocCodes: [], noService: false, source: "demo" });
+    map.set(m.month, {
+      ...m,
+      tocCodes: [],
+      noService: false,
+      source: "demo",
+      partial: false,
+    });
   }
   return map;
 }
@@ -193,17 +324,24 @@ function assemble(
   from: Station,
   to: Station,
   band: TimeBand,
-  cached: Map<string, CachedMonth>
+  months: Map<string, CachedMonth>
 ): Outcome {
-  const months = last12Months();
-  const ordered = months
-    .map((m) => cached.get(m))
-    .filter((m): m is CachedMonth => Boolean(m));
-
-  const withService = ordered.filter((m) => !m.noService && m.totalTrains > 0);
+  const withService = [...months.values()]
+    .filter((m) => !m.noService && m.totalTrains > 0)
+    .sort((a, b) => a.month.localeCompare(b.month));
   if (withService.length === 0) {
     return { noService: true, from, to, band };
   }
+
+  // The month in progress always counts toward the score (train-weighted, so
+  // a few days barely move it), but only joins the month-by-month series once
+  // it has enough trains to be a fair point next to full months.
+  const closed = withService.filter((m) => !m.partial);
+  const base = closed.length > 0 ? closed : withService;
+  const avgTrains = base.reduce((s, m) => s + m.totalTrains, 0) / base.length;
+  const series = withService.filter(
+    (m) => !m.partial || closed.length === 0 || m.totalTrains >= avgTrains * 0.4
+  );
 
   const source = withService.some((m) => m.source === "hsp") ? "hsp" : "demo";
   const agg = aggregateMetrics(withService);
@@ -212,9 +350,14 @@ function assemble(
     agg.reliabilityPct,
     agg.avgDelayMins
   );
-  const scores = monthlyScores(withService);
-  const byVolume = [...withService].sort((a, b) => b.totalTrains - a.totalTrains);
+  const scores = monthlyScores(series);
+  const byVolume = [...base].sort((a, b) => b.totalTrains - a.totalTrains);
   const weekdaysPerMonth = 21.5;
+  const dataThrough = withService
+    .map((m) => m.throughDate)
+    .filter((d): d is string => !!d)
+    .sort()
+    .at(-1);
 
   const operators = operatorsFor(from, to, withService);
 
@@ -227,18 +370,16 @@ function assemble(
     verdict: verdictFor(score),
     breakdown,
     ...agg,
-    limitedData: agg.totalTrains / withService.length < 50,
+    limitedData: avgTrains < 50,
     trend: trendFor(scores),
     monthlyScores: scores,
-    monthly: withService,
+    monthly: series,
     operators,
-    servicesPerDay: Math.max(
-      1,
-      Math.round(agg.totalTrains / withService.length / weekdaysPerMonth)
-    ),
+    servicesPerDay: Math.max(1, Math.round(avgTrains / weekdaysPerMonth)),
     busiestMonth: byVolume[0].month,
     quietestMonth: byVolume[byVolume.length - 1].month,
     source,
+    dataThrough,
   };
 }
 

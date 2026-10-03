@@ -2,10 +2,16 @@ import { NextRequest, NextResponse } from "next/server";
 import { getRouteScore } from "@/lib/provider";
 import { isTimeBand } from "@/lib/score";
 
-// A cold route triggers the ~25s parallel HSP fetch before responding.
+// A cold route runs one time-boxed fill step (~30s of HSP calls) before responding.
 export const maxDuration = 60;
 
-/** GET /api/route-score?from=BTN&to=LBG&band=am-peak */
+/**
+ * GET /api/route-score?from=BTN&to=LBG&band=am-peak
+ *
+ * 200 with the score once the route is stored. A route not seen before
+ * returns 202 `{ warming: true, cached, total }` after fetching what fits in
+ * one step — repeat the request to continue.
+ */
 export async function GET(req: NextRequest) {
   const from = req.nextUrl.searchParams.get("from")?.toUpperCase() ?? "";
   const to = req.nextUrl.searchParams.get("to")?.toUpperCase() ?? "";
@@ -32,8 +38,15 @@ export async function GET(req: NextRequest) {
         { status: 404 }
       );
     }
+    if ("warming" in result) {
+      return NextResponse.json(
+        { warming: true, cached: result.warming.cached, total: result.warming.total },
+        { status: 202, headers: { "Retry-After": "1", "Cache-Control": "no-store" } }
+      );
+    }
+    // Stored data is refreshed daily by the ingest, so cache for an hour.
     return NextResponse.json(result, {
-      headers: { "Cache-Control": "public, s-maxage=86400" },
+      headers: { "Cache-Control": "public, s-maxage=3600" },
     });
   } catch {
     return NextResponse.json(
