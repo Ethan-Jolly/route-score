@@ -138,6 +138,11 @@ export function StationSearch({
   // One station on its own opens that station's page of every route.
   const single = from && !to ? from : to && !from ? to : null;
 
+  function swap() {
+    setFrom(to);
+    setTo(from);
+  }
+
   function go() {
     if (ready) {
       setLoading(true);
@@ -160,9 +165,29 @@ export function StationSearch({
           onSelect={setFrom}
           autoFocus={autoFocus}
         />
-        <div className="hidden sm:flex items-end pb-2.5 text-slate-300" aria-hidden>
-          →
-        </div>
+        <button
+          type="button"
+          onClick={swap}
+          disabled={!from && !to}
+          aria-label="Swap from and to"
+          title="Swap from and to"
+          className="-my-1.5 flex h-8 w-8 shrink-0 items-center justify-center self-center rounded-full border border-slate-200 text-slate-500 hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 disabled:border-transparent disabled:text-slate-300 disabled:hover:bg-transparent transition-colors sm:my-0 sm:mb-[5px] sm:self-end"
+        >
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="rotate-90 sm:rotate-0"
+            aria-hidden
+          >
+            <path d="M2 5.5h11M10.5 3 13 5.5 10.5 8M14 10.5H3M5.5 8 3 10.5 5.5 13" />
+          </svg>
+        </button>
         <StationField
           label="To"
           placeholder="e.g. London Bridge"
