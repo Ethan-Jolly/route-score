@@ -14,9 +14,16 @@
  * viewable in local dev.
  */
 
-import { PEAK_HOURS, compositeScore, last12Months, metricsFromCounts, verdictFor } from "./score";
+import {
+  PEAK_HOURS,
+  compositeScore,
+  gapBetweenTrains,
+  last12Months,
+  metricsFromCounts,
+  verdictFor,
+} from "./score";
 import { dbConfigured, ensureSchema, getRouteAggregates } from "./db";
-import { currentMonth } from "./periods";
+import { currentMonth, weekdaysBetween } from "./periods";
 import { hspConfigured } from "./hsp";
 import { demoMonthlyMetrics } from "./demo";
 import { CURATED_ROUTES, isLondonTerminal } from "./routes";
@@ -61,6 +68,7 @@ interface RouteAggregate {
   onTimePct: number;
   reliabilityPct: number;
   avgDelayMins: number;
+  gapMins: number;
   totalTrains: number;
   months: number;
 }
@@ -89,7 +97,12 @@ function toEntry(a: RouteAggregate): LeaderboardEntry | null {
   const from = stationByCrs(a.from);
   const to = stationByCrs(a.to);
   if (!from || !to) return null;
-  const { score } = compositeScore(a.onTimePct, a.reliabilityPct, a.avgDelayMins);
+  const { score } = compositeScore(
+    a.onTimePct,
+    a.reliabilityPct,
+    a.avgDelayMins,
+    a.gapMins
+  );
   return {
     from,
     to,
@@ -148,6 +161,7 @@ function demoAggregates(): RouteAggregate[] {
       onTimePct: w((m) => m.onTimePct),
       reliabilityPct: w((m) => m.reliabilityPct),
       avgDelayMins: w((m) => m.avgDelayMins),
+      gapMins: w((m) => m.gapMins),
       totalTrains,
       months: months.length,
     });
@@ -172,6 +186,11 @@ export async function getLeaderboard(size = 10): Promise<Leaderboard> {
     to: t.to,
     band: LEADERBOARD_BAND,
     ...metricsFromCounts(t.trains, t.within5, t.within30),
+    gapMins: gapBetweenTrains(
+      t.trains,
+      t.spans.reduce((s, p) => s + weekdaysBetween(`${p.period}-01`, p.through), 0),
+      PEAK_HOURS.length
+    ),
     totalTrains: t.trains,
     months: t.months,
   }));

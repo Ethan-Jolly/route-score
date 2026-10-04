@@ -83,6 +83,10 @@ async function createSchema(): Promise<void> {
       PRIMARY KEY (from_crs, to_crs, period, hour)
     )
   `);
+  // Added after launch; hours stored before then stay NULL until refetched.
+  await withRetry(() => sql`
+    ALTER TABLE hourly_metrics ADD COLUMN IF NOT EXISTS journey_mins INTEGER
+  `);
   await withRetry(() => sql`
     CREATE TABLE IF NOT EXISTS route_lookups (
       from_crs  TEXT NOT NULL,
@@ -104,6 +108,7 @@ function rowToHour(r: Record<string, unknown>): HourRow {
     within30: Number(r.within30),
     services: Number(r.services),
     tocCodes: (r.toc_codes as string) ? (r.toc_codes as string).split(",") : [],
+    journeyMins: r.journey_mins == null ? null : Number(r.journey_mins),
     throughDate: r.through_date as string,
     final: Boolean(r.final),
   };
@@ -125,6 +130,34 @@ export async function getHourRows(
   return rows.map(rowToHour);
 }
 
+/** A stored hour together with the route it belongs to. */
+export interface StationHourRow extends HourRow {
+  from: string;
+  to: string;
+}
+
+/** Stored hours of every route starting or ending at a station, for the
+ * given periods and hours — the whole station page in one query. */
+export async function getStationHourRows(
+  crs: string,
+  periods: string[],
+  hours: number[]
+): Promise<StationHourRow[]> {
+  const sql = db();
+  const rows = (await withRetry(
+    () => sql`
+      SELECT * FROM hourly_metrics
+      WHERE (from_crs = ${crs} OR to_crs = ${crs})
+        AND period = ANY(${periods}) AND hour = ANY(${hours})
+    `
+  )) as Record<string, unknown>[];
+  return rows.map((r) => ({
+    ...rowToHour(r),
+    from: r.from_crs as string,
+    to: r.to_crs as string,
+  }));
+}
+
 /** Write (or replace) hours of one route-month in a single statement. */
 export async function upsertHourRows(
   from: string,
@@ -140,23 +173,25 @@ export async function upsertHourRows(
     () => sql`
       INSERT INTO hourly_metrics
         (from_crs, to_crs, period, hour, trains, within5, within30, services,
-         toc_codes, through_date, final, fetched_at)
+         toc_codes, journey_mins, through_date, final, fetched_at)
       SELECT ${from}, ${to}, ${period}, t.hour, t.trains, t.within5, t.within30,
-             t.services, t.toc_codes, ${throughDate}, ${final}, now()
+             t.services, t.toc_codes, t.journey_mins, ${throughDate}, ${final}, now()
       FROM unnest(
         ${rows.map((r) => r.hour)}::smallint[],
         ${rows.map((r) => r.trains)}::int[],
         ${rows.map((r) => r.within5)}::int[],
         ${rows.map((r) => r.within30)}::int[],
         ${rows.map((r) => r.services)}::int[],
-        ${rows.map((r) => r.tocCodes.join(","))}::text[]
-      ) AS t(hour, trains, within5, within30, services, toc_codes)
+        ${rows.map((r) => r.tocCodes.join(","))}::text[],
+        ${rows.map((r) => r.journeyMins)}::int[]
+      ) AS t(hour, trains, within5, within30, services, toc_codes, journey_mins)
       ON CONFLICT (from_crs, to_crs, period, hour) DO UPDATE SET
         trains = EXCLUDED.trains,
         within5 = EXCLUDED.within5,
         within30 = EXCLUDED.within30,
         services = EXCLUDED.services,
         toc_codes = EXCLUDED.toc_codes,
+        journey_mins = EXCLUDED.journey_mins,
         through_date = EXCLUDED.through_date,
         final = EXCLUDED.final,
         fetched_at = now()
@@ -259,6 +294,8 @@ export interface RouteAggregate {
   within30: number;
   /** Months with actual service that had every requested hour stored. */
   months: number;
+  /** Those months, each with the last date its counts cover. */
+  spans: { period: string; through: string }[];
 }
 
 /**
@@ -279,12 +316,14 @@ export async function getRouteAggregates(
              SUM(trains)::int                        AS trains,
              SUM(within5)::int                       AS within5,
              SUM(within30)::int                      AS within30,
-             COUNT(*) FILTER (WHERE trains > 0)::int AS months
+             COUNT(*) FILTER (WHERE trains > 0)::int AS months,
+             ARRAY_AGG(period || '|' || through) FILTER (WHERE trains > 0) AS spans
       FROM (
         SELECT from_crs, to_crs, period,
-               SUM(trains)   AS trains,
-               SUM(within5)  AS within5,
-               SUM(within30) AS within30
+               SUM(trains)       AS trains,
+               SUM(within5)      AS within5,
+               SUM(within30)     AS within30,
+               MIN(through_date) AS through
         FROM hourly_metrics
         WHERE hour = ANY(${hours}) AND period = ANY(${periods})
         GROUP BY from_crs, to_crs, period
@@ -301,6 +340,10 @@ export async function getRouteAggregates(
     within5: Number(r.within5),
     within30: Number(r.within30),
     months: Number(r.months),
+    spans: ((r.spans as string[] | null) ?? []).map((s) => {
+      const [period, through] = s.split("|");
+      return { period, through };
+    }),
   }));
 }
 

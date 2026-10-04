@@ -14,7 +14,7 @@ const BAND_HINTS: Record<TimeBand, string> = {
   "off-peak": "09:00–16:00",
 };
 
-function StationField({
+export function StationField({
   label,
   placeholder,
   selected,
@@ -120,21 +120,33 @@ function StationField({
 
 export function StationSearch({
   initialBand = "am-peak",
+  initialFrom = null,
+  autoFocus = true,
 }: {
   initialBand?: TimeBand;
+  initialFrom?: Station | null;
+  autoFocus?: boolean;
 }) {
   const router = useRouter();
-  const [from, setFrom] = useState<Station | null>(null);
+  const [from, setFrom] = useState<Station | null>(initialFrom);
   const [to, setTo] = useState<Station | null>(null);
   const [band, setBand] = useState<TimeBand>(initialBand);
   const [loading, setLoading] = useState(false);
 
   const ready = from && to && from.crs !== to.crs;
+  // One station on its own opens that station's page of every route.
+  const single = from && !to ? from : to && !from ? to : null;
 
   function go() {
-    if (!ready) return;
-    setLoading(true);
-    router.push(`/route/${from.crs}-${to.crs}?band=${band}`);
+    if (ready) {
+      setLoading(true);
+      router.push(`/route/${from.crs}-${to.crs}?band=${band}`);
+    } else if (single) {
+      setLoading(true);
+      router.push(
+        `/station/${single.crs}?band=${band}&dir=${single === from ? "from" : "to"}`
+      );
+    }
   }
 
   return (
@@ -145,7 +157,7 @@ export function StationSearch({
           placeholder="e.g. Brighton"
           selected={from}
           onSelect={setFrom}
-          autoFocus
+          autoFocus={autoFocus}
         />
         <div className="hidden sm:flex items-end pb-2.5 text-slate-300" aria-hidden>
           →
@@ -190,11 +202,20 @@ export function StationSearch({
       <button
         type="button"
         onClick={go}
-        disabled={!ready || loading}
+        disabled={!(ready || single) || loading}
         className="mt-4 w-full rounded-lg bg-emerald-600 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
       >
-        {loading ? "Scoring your route…" : "Get my Route Score"}
+        {loading
+          ? single
+            ? "Loading station…"
+            : "Scoring your route…"
+          : single
+            ? `See every route ${single === from ? "from" : "to"} ${single.name}`
+            : "Get my Route Score"}
       </button>
+      <p className="mt-2 text-center text-xs text-slate-400">
+        Pick just one station to see every route we&apos;ve scored for it.
+      </p>
     </div>
   );
 }

@@ -27,6 +27,19 @@ export function yesterday(now = new Date()): string {
   return isoDate(new Date(now.getTime() - 86_400_000));
 }
 
+/** Weekdays (Mon–Fri) from one YYYY-MM-DD date to another, inclusive. HSP is
+ * only ever asked for weekday services, so this is how many days of trains a
+ * set of counts covers. */
+export function weekdaysBetween(from: string, to: string): number {
+  const end = Date.parse(`${to}T00:00:00Z`);
+  let n = 0;
+  for (let t = Date.parse(`${from}T00:00:00Z`); t <= end; t += 86_400_000) {
+    const day = new Date(t).getUTCDay();
+    if (day !== 0 && day !== 6) n++;
+  }
+  return n;
+}
+
 export interface PeriodRange {
   /** First date to query (always the 1st). */
   from: string;

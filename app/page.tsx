@@ -88,8 +88,8 @@ export default async function HomePage() {
         <div>
           <h3 className="font-semibold text-slate-900">One number</h3>
           <p className="mt-1 text-slate-500">
-            60% punctuality, 25% reliability, 15% delay severity. Weighted the
-            way commuters actually feel it.
+            50% punctuality, 25% reliability, 15% delay severity, 10% how
+            often trains run. Weighted the way commuters actually feel it.
           </p>
         </div>
         <div>

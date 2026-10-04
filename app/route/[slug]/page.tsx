@@ -11,6 +11,7 @@ import { getCachedRouteScore, parseRouteSlug, routeSlug } from "@/lib/provider";
 import { stationByCrs } from "@/lib/stations";
 import {
   BAND_LABELS,
+  formatMins,
   formatMonthLong,
   TIER_COLORS,
   tierFor,
@@ -98,7 +99,13 @@ export default async function RoutePage(props: Props) {
     : "the past 12 months";
 
   const color = TIER_COLORS[tierFor(result.score)];
-  const shareUrl = `/score/${routeSlug(result.from.crs, result.to.crs, result.band)}`;
+  const slug = routeSlug(result.from.crs, result.to.crs, result.band);
+  const shareUrl = `/score/${slug}`;
+  // What delays add to the timetable for an average train, in whole minutes.
+  const delayMins =
+    result.expectedMins !== undefined && result.journeyMins !== undefined
+      ? result.expectedMins - result.journeyMins
+      : 0;
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-10">
@@ -106,9 +113,21 @@ export default async function RoutePage(props: Props) {
       <div className="rise-in flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900">
-            {result.from.name}{" "}
+            <Link
+              href={`/station/${result.from.crs}?band=${result.band}&dir=from`}
+              className="hover:text-emerald-700 transition-colors"
+              title={`Every route from ${result.from.name}`}
+            >
+              {result.from.name}
+            </Link>{" "}
             <span className="text-slate-300 font-normal">→</span>{" "}
-            {result.to.name}
+            <Link
+              href={`/station/${result.to.crs}?band=${result.band}&dir=to`}
+              className="hover:text-emerald-700 transition-colors"
+              title={`Every route to ${result.to.name}`}
+            >
+              {result.to.name}
+            </Link>
           </h1>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {BANDS.map((b) => (
@@ -131,6 +150,12 @@ export default async function RoutePage(props: Props) {
         </div>
         <div className="flex items-center gap-2">
           <CopyLinkButton path={shareUrl} />
+          <Link
+            href={`/compare?a=${slug}`}
+            className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700 transition-colors"
+          >
+            Compare
+          </Link>
           <Link
             href={shareUrl}
             className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:border-slate-400 transition-colors"
@@ -190,6 +215,46 @@ export default async function RoutePage(props: Props) {
               </span>
             )}
           </p>
+          <dl className="mt-5 grid gap-3 text-left sm:grid-cols-2">
+            <div className="rounded-xl bg-slate-50 px-4 py-3">
+              <dt className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                Expected journey time
+              </dt>
+              {result.expectedMins !== undefined && result.journeyMins !== undefined ? (
+                <>
+                  <dd className="mt-0.5 text-lg font-bold tabular-nums text-slate-900">
+                    {formatMins(result.expectedMins)}
+                  </dd>
+                  <dd className="text-xs text-slate-500">
+                    {formatMins(result.journeyMins)} timetabled
+                    {delayMins > 0
+                      ? ` + ${delayMins} min of average delay`
+                      : ", with under a minute of average delay"}
+                  </dd>
+                </>
+              ) : (
+                <>
+                  <dd className="mt-0.5 text-lg font-bold text-slate-300">—</dd>
+                  <dd className="text-xs text-slate-500">
+                    Journey times are added the next time this route&apos;s
+                    data refreshes.
+                  </dd>
+                </>
+              )}
+            </div>
+            <div className="rounded-xl bg-slate-50 px-4 py-3">
+              <dt className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                Time between trains
+              </dt>
+              <dd className="mt-0.5 text-lg font-bold tabular-nums text-slate-900">
+                {formatMins(result.gapMins)}
+              </dd>
+              <dd className="text-xs text-slate-500">
+                On average in the {BAND_LABELS[result.band]} — about a{" "}
+                {formatMins(result.gapMins / 2)} wait if you just turn up
+              </dd>
+            </div>
+          </dl>
           {result.source === "demo" && (
             <p className="mt-3 inline-block rounded-lg bg-slate-50 border border-slate-200 px-3 py-1.5 text-[11px] text-slate-400">
               Demo data — connect HSP API credentials for live figures
@@ -203,10 +268,10 @@ export default async function RoutePage(props: Props) {
         <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3">
           How the score breaks down
         </h2>
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <MetricBar
             label="On-time"
-            weight="60%"
+            weight="50%"
             value={result.breakdown.onTimeScore}
             displayValue={`${Math.round(result.onTimePct)}%`}
             detail={`${Math.round(result.onTimePct)}% of trains arrive within 5 minutes of schedule`}
@@ -227,6 +292,14 @@ export default async function RoutePage(props: Props) {
             displayValue={`${result.avgDelayMins}m`}
             detail={`When late, trains average ${result.avgDelayMins} minutes behind`}
             color="#f59e0b"
+          />
+          <MetricBar
+            label="Frequency"
+            weight="10%"
+            value={result.breakdown.frequencyScore}
+            displayValue={`${Math.round(result.gapMins)}m`}
+            detail={`A train about every ${formatMins(result.gapMins)} on average`}
+            color="#14b8a6"
           />
         </div>
       </section>
@@ -273,10 +346,12 @@ export default async function RoutePage(props: Props) {
 
       {/* Transparency note */}
       <p className="mt-8 text-xs text-slate-400 max-w-2xl">
-        The score is 60% punctuality (within 5 minutes), 25% reliability (not
-        cancelled or 30+ minutes late) and 15% delay severity (average minutes
-        late when late, where every minute costs 5 points). We show the working
-        because trust comes from transparency.
+        The score is 50% punctuality (within 5 minutes), 25% reliability (not
+        cancelled or 30+ minutes late), 15% delay severity (average minutes
+        late when late, where every minute costs 5 points) and 10% frequency
+        (full marks for a train every 10 minutes, losing 1 point for each
+        extra minute between trains). We show the working because trust comes
+        from transparency.
       </p>
     </div>
   );

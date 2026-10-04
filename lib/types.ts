@@ -16,12 +16,15 @@ export interface MonthlyMetrics {
   reliabilityPct: number;
   /** Average minutes late, among late trains only */
   avgDelayMins: number;
+  /** Average minutes between trains within the band */
+  gapMins: number;
 }
 
 export interface ScoreBreakdown {
   onTimeScore: number;
   reliabilityScore: number;
   delayScore: number;
+  frequencyScore: number;
 }
 
 export type Trend = "improving" | "degrading" | "stable";
@@ -52,7 +55,13 @@ export interface RouteScoreResult {
   onTimePct: number;
   reliabilityPct: number;
   avgDelayMins: number;
+  gapMins: number;
   totalTrains: number;
+  /** Average timetabled journey in minutes; absent until the route's hours
+   * have been fetched since journey times started being collected. */
+  journeyMins?: number;
+  /** Timetabled journey plus the delay an average train picks up. */
+  expectedMins?: number;
   limitedData: boolean;
   trend: Trend;
   monthlyScores: MonthlyScore[];

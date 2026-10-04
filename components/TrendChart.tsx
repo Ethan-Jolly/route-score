@@ -1,3 +1,4 @@
+import { useId } from "react";
 import { formatMonth, TIER_COLORS, tierFor } from "@/lib/score";
 import type { MonthlyScore, Trend } from "@/lib/types";
 
@@ -25,6 +26,8 @@ export function TrendBadge({ trend }: { trend: Trend }) {
  * small movements stay legible.
  */
 export function TrendChart({ scores }: { scores: MonthlyScore[] }) {
+  // Unique per chart, so two charts on one page don't share a gradient.
+  const fillId = useId();
   const w = 640;
   const h = 200;
   const pad = { top: 16, right: 12, bottom: 28, left: 34 };
@@ -56,7 +59,7 @@ export function TrendChart({ scores }: { scores: MonthlyScore[] }) {
       aria-label={`Route score by month, most recently ${latest.score}`}
     >
       <defs>
-        <linearGradient id="trend-fill" x1="0" y1="0" x2="0" y2="1">
+        <linearGradient id={fillId} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor={color} stopOpacity="0.22" />
           <stop offset="100%" stopColor={color} stopOpacity="0.02" />
         </linearGradient>
@@ -84,7 +87,7 @@ export function TrendChart({ scores }: { scores: MonthlyScore[] }) {
         </g>
       ))}
 
-      <path d={areaPath} fill="url(#trend-fill)" />
+      <path d={areaPath} fill={`url(#${fillId})`} />
       <path
         className="trend-line"
         d={linePath}

@@ -12,13 +12,14 @@
  * client warming UI, each step persisting what it fetched.
  */
 
-import { demoMonthlyMetrics, demoOperators } from "./demo";
+import { demoJourneyMins, demoMonthlyMetrics, demoOperators } from "./demo";
 import { fetchHspHours, hspConfigured, tocNamesFor } from "./hsp";
 import {
   dbConfigured,
   ensureSchema,
   getHourRows,
   getServiceHint,
+  getStationHourRows,
   recordLookup,
   upsertHourRows,
   type HourRow,
@@ -27,13 +28,15 @@ import {
   BAND_HOURS,
   aggregateMetrics,
   compositeScore,
+  gapBetweenTrains,
   last12Months,
   metricsFromCounts,
   monthlyScores,
   trendFor,
   verdictFor,
 } from "./score";
-import { currentMonth, periodRange } from "./periods";
+import { currentMonth, periodRange, weekdaysBetween } from "./periods";
+import { CURATED_ROUTES } from "./routes";
 import { stationByCrs } from "./stations";
 import type {
   MonthlyMetrics,
@@ -48,6 +51,10 @@ type Outcome = RouteScoreResult | NoServiceResult | null;
 /** One month of a route/band, assembled from its stored hours. */
 export interface CachedMonth extends MonthlyMetrics {
   tocCodes: string[];
+  /** Timetabled journey minutes summed over `journeyTrains` trains — the
+   * hours of the month whose journey times are known (possibly none). */
+  journeyMins: number;
+  journeyTrains: number;
   /** No direct trains ran in this band that month. */
   noService: boolean;
   source: "hsp" | "demo";
@@ -115,12 +122,18 @@ async function loadRoute(
   to: Station,
   band: TimeBand
 ): Promise<RouteState> {
+  const { periods } = scoreWindow();
+  return buildState(await getHourRows(from.crs, to.crs, periods), band);
+}
+
+/** What one route's stored hours amount to for a band. */
+function buildState(storedRows: HourRow[], band: TimeBand): RouteState {
   const { closed, periods } = scoreWindow();
   const hours = BAND_HOURS[band];
   const current = currentMonth();
 
   const byPeriod = new Map<string, Map<number, HourRow>>();
-  for (const row of await getHourRows(from.crs, to.crs, periods)) {
+  for (const row of storedRows) {
     if (!byPeriod.has(row.period)) byPeriod.set(row.period, new Map());
     byPeriod.get(row.period)!.set(row.hour, row);
   }
@@ -137,6 +150,11 @@ async function loadRoute(
       continue;
     }
     const trains = rows.reduce((s, r) => s + r.trains, 0);
+    const throughDate = rows.reduce(
+      (min, r) => (r.throughDate < min ? r.throughDate : min),
+      rows[0].throughDate
+    );
+    const timed = rows.filter((r) => r.journeyMins !== null);
     months.set(period, {
       month: period,
       totalTrains: trains,
@@ -145,14 +163,18 @@ async function loadRoute(
         rows.reduce((s, r) => s + r.within5, 0),
         rows.reduce((s, r) => s + r.within30, 0)
       ),
+      gapMins: gapBetweenTrains(
+        trains,
+        weekdaysBetween(`${period}-01`, throughDate),
+        hours.length
+      ),
       tocCodes: [...new Set(rows.flatMap((r) => r.tocCodes))],
+      journeyMins: timed.reduce((s, r) => s + (r.journeyMins ?? 0), 0),
+      journeyTrains: timed.reduce((s, r) => s + r.trains, 0),
       noService: trains === 0,
       source: "hsp",
       partial: period === current,
-      throughDate: rows.reduce(
-        (min, r) => (r.throughDate < min ? r.throughDate : min),
-        rows[0].throughDate
-      ),
+      throughDate,
     });
   }
 
@@ -332,6 +354,63 @@ export async function getCachedRouteScore(
   }
 }
 
+/** Every stored route out of and into one station, best score first. */
+export interface StationRoutes {
+  departures: RouteScoreResult[];
+  arrivals: RouteScoreResult[];
+}
+
+/**
+ * The station page: scores for every route touching a station that has
+ * enough stored to show, in one DB read. Never calls HSP — a route appears
+ * here once the ingest (or a visitor's lookup) has fetched it. In demo mode
+ * the curated routes stand in for "stored".
+ */
+export async function getStationRoutes(
+  crs: string,
+  band: TimeBand
+): Promise<StationRoutes> {
+  const station = stationByCrs(crs);
+  if (!station) return { departures: [], arrivals: [] };
+
+  const outcomes: Outcome[] = [];
+  if (!hspConfigured()) {
+    for (const r of CURATED_ROUTES) {
+      if (r.from !== station.crs && r.to !== station.crs) continue;
+      const pair = resolveStations(r.from, r.to);
+      if (!pair) continue;
+      outcomes.push(assemble(pair.from, pair.to, band, demoCache(r.from, r.to, band)));
+    }
+  } else if (dbConfigured()) {
+    try {
+      await ensureSchema();
+      const { periods } = scoreWindow();
+      const byRoute = new Map<string, HourRow[]>();
+      for (const row of await getStationHourRows(station.crs, periods, BAND_HOURS[band])) {
+        const key = `${row.from}>${row.to}`;
+        if (!byRoute.has(key)) byRoute.set(key, []);
+        byRoute.get(key)!.push(row);
+      }
+      for (const [key, rows] of byRoute) {
+        const [from, to] = key.split(">");
+        const pair = resolveStations(from, to);
+        if (!pair) continue;
+        outcomes.push(assembleState(pair.from, pair.to, band, buildState(rows, band)));
+      }
+    } catch {
+      // Same as a route page: a transient DB failure shows as "nothing stored".
+    }
+  }
+
+  const scored = outcomes
+    .filter((o): o is RouteScoreResult => o !== null && o.noService === false)
+    .sort((a, b) => b.score - a.score || a.to.name.localeCompare(b.to.name));
+  return {
+    departures: scored.filter((r) => r.from.crs === station.crs),
+    arrivals: scored.filter((r) => r.to.crs === station.crs),
+  };
+}
+
 function resolveStations(
   fromCrs: string,
   toCrs: string
@@ -348,10 +427,13 @@ function demoCache(
   band: TimeBand
 ): Map<string, CachedMonth> {
   const map = new Map<string, CachedMonth>();
+  const journey = demoJourneyMins(from, to);
   for (const m of demoMonthlyMetrics(from, to, band)) {
     map.set(m.month, {
       ...m,
       tocCodes: [],
+      journeyMins: journey * m.totalTrains,
+      journeyTrains: m.totalTrains,
       noService: false,
       source: "demo",
       partial: false,
@@ -389,8 +471,20 @@ function assemble(
   const { score, breakdown } = compositeScore(
     agg.onTimePct,
     agg.reliabilityPct,
-    agg.avgDelayMins
+    agg.avgDelayMins,
+    agg.gapMins
   );
+  // Timetabled time over whichever trains have it, plus the delay an average
+  // train picks up (late trains' average lateness, spread over all trains).
+  const timedTrains = withService.reduce((s, m) => s + m.journeyTrains, 0);
+  const journeyMins =
+    timedTrains > 0
+      ? withService.reduce((s, m) => s + m.journeyMins, 0) / timedTrains
+      : undefined;
+  const expectedMins =
+    journeyMins === undefined
+      ? undefined
+      : journeyMins + ((100 - agg.onTimePct) / 100) * agg.avgDelayMins;
   const scores = monthlyScores(series);
   const byVolume = [...base].sort((a, b) => b.totalTrains - a.totalTrains);
   const weekdaysPerMonth = 21.5;
@@ -411,6 +505,8 @@ function assemble(
     verdict: verdictFor(score),
     breakdown,
     ...agg,
+    journeyMins: journeyMins === undefined ? undefined : Math.round(journeyMins),
+    expectedMins: expectedMins === undefined ? undefined : Math.round(expectedMins),
     limitedData: avgTrains < 50,
     trend: trendFor(scores),
     monthlyScores: scores,

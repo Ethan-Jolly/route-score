@@ -10,7 +10,8 @@
  */
 
 import type { MonthlyMetrics, TimeBand } from "./types";
-import { last12Months } from "./score";
+import { BAND_HOURS, gapBetweenTrains, last12Months } from "./score";
+import { monthEnd, weekdaysBetween } from "./periods";
 
 /** Small deterministic PRNG (mulberry32) seeded from a string. */
 function seededRandom(seedStr: string): () => number {
@@ -93,8 +94,20 @@ export function demoMonthlyMetrics(
       onTimePct: round1(onTimePct),
       reliabilityPct: round1(reliabilityPct),
       avgDelayMins: round1(avgDelayMins),
+      gapMins: gapBetweenTrains(
+        totalTrains,
+        weekdaysBetween(`${month}-01`, monthEnd(month)),
+        BAND_HOURS[band].length
+      ),
     };
   });
+}
+
+/** A plausible timetabled journey time for a route: 18–140 minutes, the same
+ * in both directions. */
+export function demoJourneyMins(from: string, to: string): number {
+  const rand = seededRandom(`${[from, to].sort().join("-")}-journey`);
+  return Math.round(18 + rand() * rand() * 122);
 }
 
 /** Plausible primary operators, keyed by which stations the route touches. */

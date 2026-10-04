@@ -32,6 +32,10 @@ export interface HourCounts {
   /** Distinct timetabled services seen — the cost driver, used to size calls. */
   services: number;
   tocCodes: string[];
+  /** Timetabled journey minutes summed over `trains`, so the average is
+   * journeyMins / trains. Null when not known: hours stored before this was
+   * collected, or no service carried usable times. */
+  journeyMins: number | null;
 }
 
 interface HspMetric {
@@ -48,6 +52,7 @@ interface HspService {
     destination_location: string;
     /** Scheduled departure from the queried origin, "HHMM". */
     gbtt_ptd: string;
+    /** Scheduled arrival at the queried destination, "HHMM". */
     gbtt_pta: string;
     toc_code: string;
     matched_services: string;
@@ -175,11 +180,23 @@ async function fetchWindow(
   return data.Services ?? [];
 }
 
+/** Timetabled minutes from departure to arrival ("HHMM" each), allowing for a
+ * journey that runs past midnight. Null if either time is unusable. */
+function scheduledMins(ptd: string, pta: string): number | null {
+  if (!/^\d{4}$/.test(ptd ?? "") || !/^\d{4}$/.test(pta ?? "")) return null;
+  const mins = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(2));
+  const d = (mins(pta) - mins(ptd) + 1440) % 1440;
+  return d > 0 ? d : null;
+}
+
 /** Bucket services into the given hours by scheduled departure time. Every
  * requested hour gets a row (zeros included) so "fetched, no trains" is
  * distinguishable from "not fetched". */
 function bucketByHour(services: HspService[], hours: number[]): HourCounts[] {
-  const rows = new Map<number, HourCounts & { tocs: Set<string> }>();
+  const rows = new Map<
+    number,
+    HourCounts & { tocs: Set<string>; timed: number; mins: number }
+  >();
   for (const h of hours) {
     rows.set(h, {
       hour: h,
@@ -188,7 +205,10 @@ function bucketByHour(services: HspService[], hours: number[]): HourCounts[] {
       within30: 0,
       services: 0,
       tocCodes: [],
+      journeyMins: null,
       tocs: new Set(),
+      timed: 0,
+      mins: 0,
     });
   }
   const first = hours[0];
@@ -198,8 +218,14 @@ function bucketByHour(services: HspService[], hours: number[]): HourCounts[] {
     const h = Number(attrs.gbtt_ptd?.slice(0, 2));
     // Anything HSP returns outside the window is clamped into it, not dropped.
     const row = rows.get(Number.isFinite(h) ? Math.min(last, Math.max(first, h)) : first)!;
+    const matched = Number(attrs.matched_services) || 0;
     row.services++;
-    row.trains += Number(attrs.matched_services) || 0;
+    row.trains += matched;
+    const journey = scheduledMins(attrs.gbtt_ptd, attrs.gbtt_pta);
+    if (journey !== null) {
+      row.timed += matched;
+      row.mins += matched * journey;
+    }
     if (attrs.toc_code) row.tocs.add(attrs.toc_code);
     for (const metric of svc.Metrics ?? []) {
       const inTolerance = Number(metric.num_tolerance) || 0;
@@ -208,8 +234,11 @@ function bucketByHour(services: HspService[], hours: number[]): HourCounts[] {
     }
   }
   return hours.map((h) => {
-    const { tocs, ...row } = rows.get(h)!;
-    return { ...row, tocCodes: [...tocs] };
+    const { tocs, timed, mins, ...row } = rows.get(h)!;
+    // Scaled up to cover any trains whose service had no usable times.
+    const journeyMins =
+      row.trains === 0 ? 0 : timed > 0 ? Math.round((mins * row.trains) / timed) : null;
+    return { ...row, tocCodes: [...tocs], journeyMins };
   });
 }
 

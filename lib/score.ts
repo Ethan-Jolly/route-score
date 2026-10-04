@@ -32,6 +32,20 @@ export const STORED_HOURS = hourRange(6, 19);
 export const PEAK_HOURS = [...BAND_HOURS["am-peak"], ...BAND_HOURS["pm-peak"]];
 
 /**
+ * Average minutes between trains: the band's length shared out among the
+ * trains that ran in it per weekday. Half of this is the typical wait for
+ * someone who turns up without checking the timetable.
+ */
+export function gapBetweenTrains(
+  trains: number,
+  weekdays: number,
+  bandHours: number
+): number {
+  if (trains <= 0) return 0;
+  return round1((bandHours * 60 * Math.max(1, weekdays)) / trains);
+}
+
+/**
  * Percentages from raw punctuality counts. HSP gives tolerance buckets only,
  * so reliability ≈ % within 30 min and average delay is estimated from bucket
  * midpoints (5–30 min late ≈ 12 min, 30+ min ≈ 40 min).
@@ -56,22 +70,48 @@ export function isTimeBand(value: string): value is TimeBand {
   return ["am-peak", "pm-peak", "off-peak"].includes(value);
 }
 
-/** The spec's composite formula: 60% on-time, 25% reliability, 15% delay severity. */
+/** Each component's share of the score. The spec's original three, with a
+ * tenth taken from on-time to make room for how often trains run. */
+export const SCORE_WEIGHTS = {
+  onTime: 0.5,
+  reliability: 0.25,
+  delay: 0.15,
+  frequency: 0.1,
+};
+
+/** A train every 10 minutes or better is full marks; each minute of gap
+ * beyond that costs a point, so an hourly service scores 50 here. */
+const FREQUENCY_FREE_MINS = 10;
+const FREQUENCY_POINTS_PER_MIN = 1;
+
+/** The composite formula: 50% on-time, 25% reliability, 15% delay severity,
+ * 10% frequency. */
 export function compositeScore(
   onTimePct: number,
   reliabilityPct: number,
-  avgDelayMins: number
+  avgDelayMins: number,
+  gapMins: number
 ): { score: number; breakdown: ScoreBreakdown } {
   const onTimeScore = clamp(onTimePct, 0, 100);
   const reliabilityScore = clamp(reliabilityPct, 0, 100);
   const delayScore = clamp(100 - avgDelayMins * 5, 0, 100);
-  const score = onTimeScore * 0.6 + reliabilityScore * 0.25 + delayScore * 0.15;
+  const frequencyScore = clamp(
+    100 - (gapMins - FREQUENCY_FREE_MINS) * FREQUENCY_POINTS_PER_MIN,
+    0,
+    100
+  );
+  const score =
+    onTimeScore * SCORE_WEIGHTS.onTime +
+    reliabilityScore * SCORE_WEIGHTS.reliability +
+    delayScore * SCORE_WEIGHTS.delay +
+    frequencyScore * SCORE_WEIGHTS.frequency;
   return {
     score: Math.round(score),
     breakdown: {
       onTimeScore: Math.round(onTimeScore),
       reliabilityScore: Math.round(reliabilityScore),
       delayScore: Math.round(delayScore),
+      frequencyScore: Math.round(frequencyScore),
     },
   };
 }
@@ -105,7 +145,8 @@ export const TIER_COLORS: Record<ScoreTier, string> = {
 export function monthlyScores(monthly: MonthlyMetrics[]): MonthlyScore[] {
   return monthly.map((m) => ({
     month: m.month,
-    score: compositeScore(m.onTimePct, m.reliabilityPct, m.avgDelayMins).score,
+    score: compositeScore(m.onTimePct, m.reliabilityPct, m.avgDelayMins, m.gapMins)
+      .score,
   }));
 }
 
@@ -130,11 +171,12 @@ export function aggregateMetrics(monthly: MonthlyMetrics[]): {
   onTimePct: number;
   reliabilityPct: number;
   avgDelayMins: number;
+  gapMins: number;
   totalTrains: number;
 } {
   const totalTrains = monthly.reduce((s, m) => s + m.totalTrains, 0);
   if (totalTrains === 0) {
-    return { onTimePct: 0, reliabilityPct: 0, avgDelayMins: 0, totalTrains: 0 };
+    return { onTimePct: 0, reliabilityPct: 0, avgDelayMins: 0, gapMins: 0, totalTrains: 0 };
   }
   const w = (f: (m: MonthlyMetrics) => number) =>
     monthly.reduce((s, m) => s + f(m) * m.totalTrains, 0) / totalTrains;
@@ -142,6 +184,9 @@ export function aggregateMetrics(monthly: MonthlyMetrics[]): {
     onTimePct: round1(w((m) => m.onTimePct)),
     reliabilityPct: round1(w((m) => m.reliabilityPct)),
     avgDelayMins: round1(w((m) => m.avgDelayMins)),
+    // Train-weighting a gap gives total band time over total trains — the
+    // true average gap across the months.
+    gapMins: round1(w((m) => m.gapMins)),
     totalTrains,
   };
 }
@@ -157,6 +202,14 @@ export function formatMonthLong(isoMonth: string): string {
     month: "long",
     year: "numeric",
   });
+}
+
+/** Minutes as "45 min", "1h" or "1h 20m". */
+export function formatMins(mins: number): string {
+  const m = Math.round(mins);
+  if (m < 60) return `${m} min`;
+  const rest = m % 60;
+  return rest === 0 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 60)}h ${rest}m`;
 }
 
 /** The 12 complete calendar months preceding the current one, oldest first. */

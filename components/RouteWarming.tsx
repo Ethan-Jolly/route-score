@@ -150,6 +150,49 @@ export function RouteWarming({
   );
 }
 
+/** RouteWarming for a route that is one part of a page (a side of a
+ * comparison): same fill loop, sized to sit inside a card. */
+export function RouteWarmingInline({
+  from,
+  to,
+  band,
+}: {
+  from: string;
+  to: string;
+  band: TimeBand;
+}) {
+  const { pct, error, gaveUp } = useRouteFill(from, to, band, "ready", {
+    months: 0,
+    ready: false,
+  });
+
+  return (
+    <div className="my-6 w-full max-w-xs">
+      <p className="text-sm text-slate-500">
+        Pulling {BAND_LABELS[band]} data from National Rail. The score appears
+        as soon as the most recent months are in.
+      </p>
+      <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-slate-100">
+        <div
+          className="h-full rounded-full bg-emerald-500 transition-all duration-500"
+          style={{ width: `${Math.max(6, pct)}%` }}
+        />
+      </div>
+      <p className="mt-2 text-xs font-medium text-slate-400 tabular-nums">
+        {pct}% of the year fetched
+      </p>
+      {gaveUp ? (
+        <p className="mt-2 text-xs text-amber-600">
+          National Rail&apos;s data service isn&apos;t keeping up right now —
+          check back later.
+        </p>
+      ) : (
+        error && <p className="mt-2 text-xs text-amber-600">{error}</p>
+      )}
+    </div>
+  );
+}
+
 /**
  * Slim banner on a dashboard that is already showing a score while more data
  * for `band` is still being collected — either the rest of the year for the

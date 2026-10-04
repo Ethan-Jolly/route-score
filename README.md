@@ -138,16 +138,31 @@ cancellation counts, no exact lateness minutes. So in live mode:
   min, 30+ min ≈ 40 min).
 - Only **weekday** services are counted.
 
-The score formula itself is exactly as specified.
+- **Time between trains** is band length ÷ trains per weekday, so it is an
+  average over the band, not the timetable's actual gaps.
 
 ## The score
 
 ```
-on_time_score      = % arriving within 5 min           (weight 60%)
-reliability_score  = % not cancelled / 30+ min late    (weight 25%)
-delay_score        = max(0, 100 − avg_delay_mins × 5)  (weight 15%)
+on_time_score      = % arriving within 5 min                  (weight 50%)
+reliability_score  = % not cancelled / 30+ min late           (weight 25%)
+delay_score        = max(0, 100 − avg_delay_mins × 5)         (weight 15%)
+frequency_score    = clamp(100 − (gap_mins − 10) × 1, 0, 100) (weight 10%)
 route_score        = weighted sum, 0–100
 ```
+
+`gap_mins` is the average time between trains in the band: the band's length
+divided by the trains that ran per weekday. A train every 10 minutes or better
+is full marks; an hourly service scores 50 on this component. (The original
+spec had three components at 60/25/15; frequency took its 10% from on-time.)
+
+Each route also shows an **expected journey time**: the average timetabled
+journey (HSP's scheduled departure and arrival for each service) plus the delay
+an average train picks up. It is informational and not part of the score.
+Timetabled minutes are stored per hour in `hourly_metrics.journey_mins`; hours
+fetched before that column existed hold NULL, so the figure appears for a route
+once any of its hours has been fetched since (the month in progress is
+refetched daily).
 
 Time bands are sums of departure hours: AM peak 06:00–08:59, off-peak
 09:00–15:59, PM peak 16:00–18:59. There is no all-day band (the spec had one):
@@ -165,6 +180,8 @@ trend once it has enough trains to be a fair point next to full months.
 | `/` | Homepage: search + example score cards (stored routes only) |
 | `/route/BTN-LBG?band=am-peak` | Full dashboard (band tabs, breakdown, trend, context) |
 | `/score/BTN-LBG-am-peak` | Shareable score card, ISR-cached daily, with a dynamically rendered Open Graph image so pasted links preview as the card itself |
+| `/station/BTN?band=am-peak&dir=from` | Every stored route from (or to) one station, scored and ranked — reached by searching with a single station |
+| `/compare?a=BTN-LBG-am-peak&b=BTN-VIC-am-peak` | Two routes side by side. Without `b`, offers a picker and the other stored routes from the same station |
 | `/leaderboard` | Best/worst routes, toggleable between the whole UK and London only |
 | `/api/route-score?from=BTN&to=LBG&band=am-peak` | JSON API. 200 with the score, or 202 `{ warming, cached, total }` while a new route is being fetched — repeat to continue |
 | `/api/route-score/fill` | One time-boxed fill step for a new route (used by the warming screen) |
