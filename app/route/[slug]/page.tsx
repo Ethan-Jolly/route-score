@@ -216,24 +216,35 @@ export default async function RoutePage(props: Props) {
             )}
           </p>
           <dl className="mt-4 grid gap-3 text-left sm:grid-cols-2">
-            {/* Left out until the route's hours have been refetched with
-                timetabled times; an empty tile only adds clutter. */}
-            {result.expectedMins !== undefined && result.journeyMins !== undefined && (
-              <div className="rounded-xl bg-slate-50 px-4 py-3">
-                <dt className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                  Expected journey time
-                </dt>
-                <dd className="mt-0.5 text-lg font-bold tabular-nums text-slate-900">
-                  {formatMins(result.expectedMins)}
-                </dd>
-                <dd className="text-xs text-slate-500">
-                  {formatMins(result.journeyMins)} timetabled
-                  {delayMins > 0
-                    ? `, plus ${delayMins} min of average delay`
-                    : ", with under a minute of average delay"}
-                </dd>
-              </div>
-            )}
+            <div className="rounded-xl bg-slate-50 px-4 py-3">
+              <dt className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                Expected journey time
+              </dt>
+              {result.expectedMins !== undefined && result.journeyMins !== undefined ? (
+                <>
+                  <dd className="mt-0.5 text-lg font-bold tabular-nums text-slate-900">
+                    {formatMins(result.expectedMins)}
+                  </dd>
+                  <dd className="text-xs text-slate-500">
+                    {formatMins(result.journeyMins)} timetabled
+                    {delayMins > 0
+                      ? `, plus ${delayMins} min of average delay`
+                      : ", with under a minute of average delay"}
+                  </dd>
+                </>
+              ) : (
+                // Timetabled times only arrive as the route's hours are
+                // refetched, so a route can be scored before it has any.
+                <>
+                  <dd className="mt-0.5 text-lg font-bold text-slate-400">
+                    Coming soon
+                  </dd>
+                  <dd className="text-xs text-slate-500">
+                    We&apos;re still collecting timetable data for this route
+                  </dd>
+                </>
+              )}
+            </div>
             <div className="rounded-xl bg-slate-50 px-4 py-3">
               <dt className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
                 Time between trains
