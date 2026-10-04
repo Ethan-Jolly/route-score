@@ -79,7 +79,7 @@ function useRouteFill(
         } catch {
           failures++;
           if (cancelled) return;
-          setError("HSP is being slow right now. Retrying…");
+          setError("National Rail is being slow right now. Retrying…");
           await new Promise((r) => setTimeout(r, 2000));
         }
       }
@@ -123,9 +123,9 @@ export function RouteWarming({
         Scoring {from.name} → {to.name}
       </h1>
       <p className="mt-1 text-sm text-slate-500">
-        Pulling {BAND_LABELS[band]} performance data from National Rail. You&apos;ll
-        see a score as soon as the most recent months are in; the rest of the
-        year loads behind it.
+        Nobody has looked this route up before, so we&apos;re fetching its{" "}
+        {BAND_LABELS[band]} data from National Rail. The score shows up once
+        the latest few months are in, usually within a minute or two.
       </p>
 
       <div className="mt-6 h-2.5 w-full max-w-xs overflow-hidden rounded-full bg-slate-100">
@@ -139,9 +139,9 @@ export function RouteWarming({
       </p>
       {gaveUp ? (
         <p className="mt-3 text-xs text-amber-600">
-          National Rail&apos;s data service isn&apos;t keeping up right now.
-          We&apos;ll keep fetching this route in the background — check back
-          later.
+          National Rail&apos;s data service is struggling at the moment.
+          We&apos;ll keep fetching this route in the background, so try again
+          in a bit.
         </p>
       ) : (
         error && <p className="mt-3 text-xs text-amber-600">{error}</p>
@@ -169,8 +169,8 @@ export function RouteWarmingInline({
   return (
     <div className="my-6 w-full max-w-xs">
       <p className="text-sm text-slate-500">
-        Pulling {BAND_LABELS[band]} data from National Rail. The score appears
-        as soon as the most recent months are in.
+        Fetching {BAND_LABELS[band]} data from National Rail. The score shows
+        up once the latest few months are in.
       </p>
       <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-slate-100">
         <div
@@ -183,8 +183,8 @@ export function RouteWarmingInline({
       </p>
       {gaveUp ? (
         <p className="mt-2 text-xs text-amber-600">
-          National Rail&apos;s data service isn&apos;t keeping up right now —
-          check back later.
+          National Rail&apos;s data service is struggling at the moment. Try
+          again in a bit.
         </p>
       ) : (
         error && <p className="mt-2 text-xs text-amber-600">{error}</p>
@@ -221,7 +221,7 @@ export function RouteFilling({
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
         <p className="text-xs font-medium text-sky-900">{message}</p>
         <p className="text-[11px] font-medium text-sky-700 tabular-nums">
-          {gaveUp ? "Paused — we'll finish in the background" : `${pct}% fetched`}
+          {gaveUp ? "Paused, will finish in the background" : `${pct}% fetched`}
         </p>
       </div>
       <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-sky-100">

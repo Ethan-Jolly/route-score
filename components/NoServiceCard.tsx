@@ -25,11 +25,11 @@ export function NoServiceCard({
         National Rail&apos;s performance data shows no direct services from{" "}
         <span className="font-semibold text-slate-700">{from.name}</span> to{" "}
         <span className="font-semibold text-slate-700">{to.name}</span> in the{" "}
-        {BAND_LABELS[band]} band. Route Score rates direct journeys only — a
-        route with changes is really several routes, each with its own score.
+        {BAND_LABELS[band]}. We only score direct trains, because a journey
+        with a change is really two routes, each with its own score.
       </p>
       <p className="mt-2 text-xs text-slate-400">
-        Try each leg of your journey separately, or pick two stations on the
+        Try each leg of the journey on its own, or pick two stations on the
         same line.
       </p>
       <Link

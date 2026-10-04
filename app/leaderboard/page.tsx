@@ -4,9 +4,9 @@ import { getLeaderboard, type Board, type LeaderboardEntry } from "@/lib/leaderb
 import { TIER_COLORS, tierFor } from "@/lib/score";
 
 export const metadata: Metadata = {
-  title: "Leaderboard — the best and worst UK rail routes",
+  title: "Leaderboard: the best and worst UK rail routes",
   description:
-    "The best and worst-performing UK rail routes, ranked by a year of real punctuality data. Filter to London commuter routes or the whole national network.",
+    "The ten best and ten worst UK rail routes, ranked on a year of peak-time punctuality data. See the whole country or just London.",
 };
 
 // Data only changes when the scheduled ingest runs (daily), so an hourly
@@ -29,14 +29,14 @@ export default async function LeaderboardPage(props: Props) {
   const hasData = active.best.length > 0;
 
   return (
-    <div className="mx-auto max-w-5xl px-4 pb-20">
-      <section className="pt-12 pb-6">
-        <h1 className="text-3xl sm:text-4xl font-bold tracking-tight text-slate-900">
-          The leaderboard
+    <div className="mx-auto max-w-5xl px-4 pb-12">
+      <section className="pt-8 pb-5">
+        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900">
+          Leaderboard
         </h1>
-        <p className="mt-3 max-w-2xl text-slate-500">
-          Every route ranked by its Route Score — one honest number from a year
-          of National Rail punctuality data. Best at the top, worst laid bare.
+        <p className="mt-2 max-w-2xl text-sm text-slate-500">
+          The ten best and ten worst routes we&apos;ve scored, on a year of
+          peak-time trains. Tap a route to see the detail.
         </p>
       </section>
 
@@ -48,18 +48,18 @@ export default async function LeaderboardPage(props: Props) {
 
       {isDemo && (
         <p className="mt-4 rounded-lg bg-amber-50 border border-amber-200 px-4 py-2 text-xs text-amber-700">
-          Showing <strong>demo data</strong> — connect HSP + a database and run
-          the ingest to populate real rankings.
+          This is <strong>demo data</strong>. Connect HSP and a database, then
+          run the ingest, to see real rankings.
         </p>
       )}
 
       {!hasData ? (
         <p className="mt-10 rounded-xl border border-slate-200 bg-white p-6 text-slate-500">
           No routes have enough data yet. The leaderboard fills in as the
-          ingest job works through the route list — check back soon.
+          ingest job works through the route list.
         </p>
       ) : (
-        <div className="mt-8 grid gap-8 lg:grid-cols-2">
+        <div className="mt-6 grid gap-x-8 gap-y-6 lg:grid-cols-2">
           <BoardColumn
             title="Best rated"
             accent="text-emerald-600"
@@ -69,18 +69,18 @@ export default async function LeaderboardPage(props: Props) {
           <BoardColumn
             title="Worst rated"
             accent="text-red-600"
-            subtitle={scope === "london" ? "London's worst offenders" : "The UK's worst offenders"}
+            subtitle={scope === "london" ? "London's least reliable" : "The UK's least reliable"}
             entries={active.worst}
           />
         </div>
       )}
 
       {hasData && (
-        <p className="mt-10 text-xs text-slate-400">
-          Ranked across {board.qualified.toLocaleString()} routes with at least
-          six months of data and regular service. All scores use peak-time
-          performance (06:00–09:00 and 16:00–19:00 on weekdays) so routes are
-          directly comparable.
+        <p className="mt-6 text-xs text-slate-400">
+          Out of {board.qualified.toLocaleString()} routes with at least six
+          months of data and a regular service. Scores here use weekday peak
+          trains only (06:00–09:00 and 16:00–19:00), so every route is judged
+          on the same hours.
         </p>
       )}
     </div>
@@ -162,8 +162,8 @@ function LeaderboardRow({ rank, entry }: { rank: number; entry: LeaderboardEntry
             {entry.from.name} → {entry.to.name}
           </span>
           <span className="mt-0.5 block text-xs text-slate-400 tabular-nums">
-            {entry.onTimePct.toFixed(0)}% on time · ~{entry.servicesPerDay}{" "}
-            peak trains/day
+            {entry.onTimePct.toFixed(0)}% on time · about {entry.servicesPerDay}{" "}
+            peak trains a day
           </span>
         </span>
         <span

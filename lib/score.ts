@@ -117,11 +117,11 @@ export function compositeScore(
 }
 
 export function verdictFor(score: number): string {
-  if (score >= 90) return "Excellent — this route runs like clockwork";
-  if (score >= 75) return "Good — mostly reliable with occasional hiccups";
-  if (score >= 60) return "Fair — expect delays a couple of times a week";
-  if (score >= 40) return "Poor — delays are a regular feature";
-  return "Dire — consider cycling";
+  if (score >= 90) return "Runs like clockwork";
+  if (score >= 75) return "Mostly reliable, with the odd bad day";
+  if (score >= 60) return "Expect delays a couple of times a week";
+  if (score >= 40) return "Delays are a regular feature";
+  return "Consider cycling";
 }
 
 export type ScoreTier = "excellent" | "good" | "fair" | "poor" | "dire";

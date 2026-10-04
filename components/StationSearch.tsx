@@ -69,6 +69,7 @@ export function StationField({
       ) : (
         <input
           autoFocus={autoFocus}
+          data-station-input
           value={query}
           onChange={(e) => {
             setQuery(e.target.value);
@@ -172,15 +173,15 @@ export function StationSearch({
 
       <div className="mt-4">
         <span className="block text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
-          Time band
+          When do you travel?
         </span>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <div className="grid grid-cols-3 gap-2">
           {BANDS.map((b) => (
             <button
               key={b}
               type="button"
               onClick={() => setBand(b)}
-              className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+              className={`rounded-lg border px-2 py-2 text-sm font-medium transition-colors ${
                 band === b
                   ? "border-slate-900 bg-slate-900 text-white"
                   : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
@@ -208,13 +209,13 @@ export function StationSearch({
         {loading
           ? single
             ? "Loading station…"
-            : "Scoring your route…"
+            : "Loading route…"
           : single
             ? `See every route ${single === from ? "from" : "to"} ${single.name}`
-            : "Get my Route Score"}
+            : "Show the score"}
       </button>
       <p className="mt-2 text-center text-xs text-slate-400">
-        Pick just one station to see every route we&apos;ve scored for it.
+        Or pick just one station to see every route we&apos;ve scored there.
       </p>
     </div>
   );

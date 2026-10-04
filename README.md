@@ -1,9 +1,10 @@
-# Route Score
+# Mind the Delay
 
-**How reliable is your commute, really?**
+**UK train routes scored out of 100.** (The repo and code still use the
+project's original name, Route Score.)
 
-Route Score turns National Rail's historical service performance data into one
-honest number per route — a 0–100 score built from a year of punctuality data,
+Mind the Delay turns National Rail's historical service performance data into
+one number per route: a 0–100 score built from a year of punctuality data,
 with a 12-month trend, a metric breakdown, and a shareable score card whose
 link preview *is* the card.
 

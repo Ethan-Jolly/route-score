@@ -1,9 +1,10 @@
 import { ImageResponse } from "next/og";
 import { getCachedRouteScore, parseRouteSlug } from "@/lib/provider";
+import { SITE_NAME, STRAPLINE } from "@/lib/site";
 import { BAND_LABELS, TIER_COLORS, tierFor } from "@/lib/score";
 
 export const runtime = "nodejs";
-export const alt = "Route Score card";
+export const alt = `${SITE_NAME} score card`;
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -42,7 +43,7 @@ export default async function OgImage({
             fontSize: 48,
           }}
         >
-          Route Score
+          {`${SITE_NAME}: ${STRAPLINE}`}
         </div>
       ),
       size
@@ -117,7 +118,7 @@ export default async function OgImage({
                 textTransform: "uppercase",
               }}
             >
-              Route Score
+              {SITE_NAME}
             </div>
             <div
               style={{
@@ -152,8 +153,8 @@ export default async function OgImage({
                   result.trend === "improving"
                     ? "Improving"
                     : result.trend === "degrading"
-                      ? "Degrading"
-                      : "Stable"
+                      ? "Getting worse"
+                      : "Steady"
                 }`}
               </span>
             </div>
@@ -167,6 +168,16 @@ export default async function OgImage({
               }}
             >
               {result.verdict}
+            </div>
+            <div
+              style={{
+                display: "flex",
+                marginTop: 28,
+                fontSize: 20,
+                color: "#94a3b8",
+              }}
+            >
+              {STRAPLINE}
             </div>
           </div>
         </div>

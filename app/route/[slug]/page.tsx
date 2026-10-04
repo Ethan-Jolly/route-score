@@ -108,7 +108,7 @@ export default async function RoutePage(props: Props) {
       : 0;
 
   return (
-    <div className="mx-auto max-w-5xl px-4 py-10">
+    <div className="mx-auto max-w-5xl px-4 pt-8 pb-12">
       {/* Route header */}
       <div className="rise-in flex flex-wrap items-start justify-between gap-4">
         <div>
@@ -175,14 +175,14 @@ export default async function RoutePage(props: Props) {
           ready={!fallback}
           message={
             fallback
-              ? `${BAND_LABELS[collecting]} is still being collected for this route — showing ${BAND_LABELS[result.band]} in the meantime.`
-              : `Provisional score from ${period}. The rest of the year is still loading.`
+              ? `${BAND_LABELS[collecting]} data for this route is still coming in. Showing ${BAND_LABELS[result.band]} for now.`
+              : `This score only covers ${period} so far. The rest of the year is still loading.`
           }
         />
       )}
 
       {/* Score hero */}
-      <div className="rise-in-delay-1 mt-8 grid gap-6 lg:grid-cols-[auto_1fr] items-center rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 shadow-sm">
+      <div className="rise-in-delay-1 mt-6 grid gap-x-8 gap-y-4 lg:grid-cols-[auto_1fr] items-center rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="mx-auto">
           <ScoreDial score={result.score} />
         </div>
@@ -211,37 +211,29 @@ export default async function RoutePage(props: Props) {
               })}`}
             {result.limitedData && (
               <span className="ml-2 inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700">
-                Limited data — treat with caution
+                Not many trains, so treat with caution
               </span>
             )}
           </p>
-          <dl className="mt-5 grid gap-3 text-left sm:grid-cols-2">
-            <div className="rounded-xl bg-slate-50 px-4 py-3">
-              <dt className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                Expected journey time
-              </dt>
-              {result.expectedMins !== undefined && result.journeyMins !== undefined ? (
-                <>
-                  <dd className="mt-0.5 text-lg font-bold tabular-nums text-slate-900">
-                    {formatMins(result.expectedMins)}
-                  </dd>
-                  <dd className="text-xs text-slate-500">
-                    {formatMins(result.journeyMins)} timetabled
-                    {delayMins > 0
-                      ? ` + ${delayMins} min of average delay`
-                      : ", with under a minute of average delay"}
-                  </dd>
-                </>
-              ) : (
-                <>
-                  <dd className="mt-0.5 text-lg font-bold text-slate-300">—</dd>
-                  <dd className="text-xs text-slate-500">
-                    Journey times are added the next time this route&apos;s
-                    data refreshes.
-                  </dd>
-                </>
-              )}
-            </div>
+          <dl className="mt-4 grid gap-3 text-left sm:grid-cols-2">
+            {/* Left out until the route's hours have been refetched with
+                timetabled times; an empty tile only adds clutter. */}
+            {result.expectedMins !== undefined && result.journeyMins !== undefined && (
+              <div className="rounded-xl bg-slate-50 px-4 py-3">
+                <dt className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                  Expected journey time
+                </dt>
+                <dd className="mt-0.5 text-lg font-bold tabular-nums text-slate-900">
+                  {formatMins(result.expectedMins)}
+                </dd>
+                <dd className="text-xs text-slate-500">
+                  {formatMins(result.journeyMins)} timetabled
+                  {delayMins > 0
+                    ? `, plus ${delayMins} min of average delay`
+                    : ", with under a minute of average delay"}
+                </dd>
+              </div>
+            )}
             <div className="rounded-xl bg-slate-50 px-4 py-3">
               <dt className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
                 Time between trains
@@ -250,23 +242,23 @@ export default async function RoutePage(props: Props) {
                 {formatMins(result.gapMins)}
               </dd>
               <dd className="text-xs text-slate-500">
-                On average in the {BAND_LABELS[result.band]} — about a{" "}
-                {formatMins(result.gapMins / 2)} wait if you just turn up
+                So about a {formatMins(result.gapMins / 2)} wait if you turn
+                up without checking
               </dd>
             </div>
           </dl>
           {result.source === "demo" && (
             <p className="mt-3 inline-block rounded-lg bg-slate-50 border border-slate-200 px-3 py-1.5 text-[11px] text-slate-400">
-              Demo data — connect HSP API credentials for live figures
+              Demo data. Add HSP API credentials for live figures.
             </p>
           )}
         </div>
       </div>
 
       {/* Metric breakdown */}
-      <section className="rise-in-delay-2 mt-8">
+      <section className="rise-in-delay-2 mt-6">
         <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3">
-          How the score breaks down
+          Where the score comes from
         </h2>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <MetricBar
@@ -274,7 +266,7 @@ export default async function RoutePage(props: Props) {
             weight="50%"
             value={result.breakdown.onTimeScore}
             displayValue={`${Math.round(result.onTimePct)}%`}
-            detail={`${Math.round(result.onTimePct)}% of trains arrive within 5 minutes of schedule`}
+            detail="Trains arriving within 5 minutes of the timetable"
             color="#0ea5e9"
           />
           <MetricBar
@@ -282,7 +274,7 @@ export default async function RoutePage(props: Props) {
             weight="25%"
             value={result.breakdown.reliabilityScore}
             displayValue={`${Math.round(result.reliabilityPct)}%`}
-            detail={`${Math.round(result.reliabilityPct)}% of trains run without cancellation or severe delay`}
+            detail="Trains not cancelled or more than 30 minutes late"
             color="#8b5cf6"
           />
           <MetricBar
@@ -290,7 +282,7 @@ export default async function RoutePage(props: Props) {
             weight="15%"
             value={result.breakdown.delayScore}
             displayValue={`${result.avgDelayMins}m`}
-            detail={`When late, trains average ${result.avgDelayMins} minutes behind`}
+            detail="How late the late trains are, on average"
             color="#f59e0b"
           />
           <MetricBar
@@ -298,25 +290,22 @@ export default async function RoutePage(props: Props) {
             weight="10%"
             value={result.breakdown.frequencyScore}
             displayValue={`${Math.round(result.gapMins)}m`}
-            detail={`A train about every ${formatMins(result.gapMins)} on average`}
+            detail="Average time between trains"
             color="#14b8a6"
           />
         </div>
       </section>
 
       {/* Trend */}
-      <section className="rise-in-delay-3 mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400">
-            Score over {period}
-          </h2>
-          <TrendBadge trend={result.trend} />
-        </div>
+      <section className="rise-in-delay-3 mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-slate-400">
+          Score over {period}
+        </h2>
         <TrendChart scores={result.monthlyScores} />
       </section>
 
       {/* Route context */}
-      <section className="rise-in-delay-3 mt-8 grid gap-3 sm:grid-cols-3">
+      <section className="rise-in-delay-3 mt-6 grid gap-3 sm:grid-cols-3">
         <div className="rounded-xl border border-slate-200 bg-white p-4">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
             Operated by
@@ -327,10 +316,10 @@ export default async function RoutePage(props: Props) {
         </div>
         <div className="rounded-xl border border-slate-200 bg-white p-4">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-            Services per weekday ({BAND_LABELS[result.band]})
+            Trains per weekday ({BAND_LABELS[result.band]})
           </p>
           <p className="mt-1 text-sm font-semibold text-slate-900">
-            ~{result.servicesPerDay} trains
+            About {result.servicesPerDay}
           </p>
         </div>
         <div className="rounded-xl border border-slate-200 bg-white p-4">
@@ -345,13 +334,12 @@ export default async function RoutePage(props: Props) {
       </section>
 
       {/* Transparency note */}
-      <p className="mt-8 text-xs text-slate-400 max-w-2xl">
-        The score is 50% punctuality (within 5 minutes), 25% reliability (not
-        cancelled or 30+ minutes late), 15% delay severity (average minutes
-        late when late, where every minute costs 5 points) and 10% frequency
-        (full marks for a train every 10 minutes, losing 1 point for each
-        extra minute between trains). We show the working because trust comes
-        from transparency.
+      <p className="mt-6 text-xs text-slate-400 max-w-2xl">
+        How it&apos;s worked out: 50% is trains arriving within 5 minutes, 25%
+        is trains that weren&apos;t cancelled or 30+ minutes late, 15% is how
+        late the late trains were (each minute costs 5 points) and 10% is
+        frequency (full marks for a train every 10 minutes, then a point off
+        for each extra minute).
       </p>
     </div>
   );

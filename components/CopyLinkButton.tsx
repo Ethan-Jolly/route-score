@@ -21,7 +21,7 @@ export function CopyLinkButton({ path }: { path: string }) {
       onClick={copy}
       className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-700 transition-colors"
     >
-      {copied ? "Copied ✓" : "Copy share link"}
+      {copied ? "Copied ✓" : "Copy link"}
     </button>
   );
 }

@@ -4,8 +4,8 @@ import type { MonthlyScore, Trend } from "@/lib/types";
 
 const TREND_META: Record<Trend, { arrow: string; label: string; cls: string }> = {
   improving: { arrow: "↑", label: "Improving", cls: "text-emerald-600 bg-emerald-50" },
-  degrading: { arrow: "↓", label: "Degrading", cls: "text-red-600 bg-red-50" },
-  stable: { arrow: "→", label: "Stable", cls: "text-slate-500 bg-slate-100" },
+  degrading: { arrow: "↓", label: "Getting worse", cls: "text-red-600 bg-red-50" },
+  stable: { arrow: "→", label: "Steady", cls: "text-slate-500 bg-slate-100" },
 };
 
 export function TrendBadge({ trend }: { trend: Trend }) {

@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Analytics } from "@vercel/analytics/next";
+import { Logo } from "@/components/Logo";
+import { SearchLink } from "@/components/SearchLink";
+import { SITE_NAME, STRAPLINE } from "@/lib/site";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -11,11 +14,11 @@ export const metadata: Metadata = {
         : "http://localhost:3000")
   ),
   title: {
-    default: "Route Score — How reliable is your commute, really?",
-    template: "%s · Route Score",
+    default: `${SITE_NAME}: ${STRAPLINE}`,
+    template: `%s · ${SITE_NAME}`,
   },
   description:
-    "A data-driven performance score for any UK rail route. One number, out of 100, built from a year of real punctuality data.",
+    "A score out of 100 for any direct UK rail route, worked out from a year of National Rail punctuality data.",
 };
 
 export default function RootLayout({
@@ -27,33 +30,31 @@ export default function RootLayout({
     <html lang="en-GB">
       <body className="min-h-screen flex flex-col">
         <header className="border-b border-slate-200/80 bg-white/70 backdrop-blur sticky top-0 z-20">
-          <div className="mx-auto max-w-5xl px-4 py-3 flex items-center justify-between">
-            <Link href="/" className="flex items-center gap-2 group">
-              <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-slate-900 text-white font-bold text-sm tracking-tight group-hover:bg-emerald-600 transition-colors">
-                RS
-              </span>
-              <span className="font-semibold tracking-tight text-slate-900">
-                Route Score
+          <div className="mx-auto max-w-5xl px-4 py-2 flex items-center justify-between gap-4">
+            <Link href="/" className="flex items-center gap-2.5">
+              <Logo size={30} />
+              <span className="flex flex-col leading-tight">
+                <span className="font-semibold tracking-tight text-slate-900">
+                  {SITE_NAME}
+                </span>
+                <span className="text-[11px] text-slate-500">{STRAPLINE}</span>
               </span>
             </Link>
-            <nav className="flex items-center gap-4 text-sm">
+            <nav className="flex items-center gap-4 sm:gap-5 text-sm font-medium text-slate-600">
+              <SearchLink className="hidden sm:block hover:text-emerald-600 transition-colors" />
               <Link
                 href="/leaderboard"
-                className="font-medium text-slate-600 hover:text-emerald-600 transition-colors"
+                className="hover:text-emerald-600 transition-colors"
               >
                 Leaderboard
               </Link>
-              <span className="text-xs text-slate-400 hidden sm:block">
-                UK rail performance, one number
-              </span>
             </nav>
           </div>
         </header>
         <main className="flex-1">{children}</main>
-        <footer className="border-t border-slate-200/80 py-6 text-center text-xs text-slate-400">
+        <footer className="border-t border-slate-200/80 px-4 py-5 text-center text-xs text-slate-400">
           <p>
-            Built on National Rail historical service performance data. Not a
-            journey planner.
+            Scores come from National Rail&apos;s historical performance data.
           </p>
         </footer>
         <Analytics />

@@ -13,9 +13,19 @@ const EXAMPLE_ROUTES: Array<{ from: string; to: string; band: TimeBand }> = [
   { from: "WOK", to: "WAT", band: "am-peak" },
 ];
 
+/** The headline changes from visit to visit: [opening, the words in green]. */
+const HEADLINES: Array<[string, string]> = [
+  ["How reliable is your commute,", "really?"],
+  ["How does your commute", "actually compare?"],
+  ["Is your train as late as", "it feels?"],
+  ["How often is your train", "on time?"],
+  ["Is it just you, or is your line", "that bad?"],
+  ["What would you give your commute", "out of 100?"],
+];
+
 // Render per-request so the example cards reflect whatever routes are warm in
-// the DB right now (a static build would freeze them at build time). The six
-// cached DB reads are cheap and run in parallel.
+// the DB right now (a static build would freeze them at build time), and so
+// the headline can vary. The six cached DB reads are cheap and run in parallel.
 export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
@@ -26,29 +36,28 @@ export default async function HomePage() {
       EXAMPLE_ROUTES.map((r) => getCachedRouteScore(r.from, r.to, r.band))
     )
   ).filter((r): r is RouteScoreResult => r !== null && r.noService === false);
+  const [opening, accent] = HEADLINES[Math.floor(Math.random() * HEADLINES.length)];
 
   return (
     <div className="mx-auto max-w-5xl px-4">
-      <section className="pt-14 pb-10 text-center">
-        <h1 className="rise-in text-4xl sm:text-5xl font-bold tracking-tight text-slate-900">
-          How reliable is your commute,{" "}
-          <span className="text-emerald-600">really?</span>
+      <section className="pt-10 pb-7 text-center sm:pt-12">
+        <h1 className="rise-in text-4xl sm:text-5xl font-bold tracking-tight text-balance text-slate-900">
+          {opening} <span className="text-emerald-600">{accent}</span>
         </h1>
-        <p className="rise-in-delay-1 mx-auto mt-4 max-w-xl text-slate-500">
-          Route Score turns a year of National Rail performance data into one
-          honest number for your route. No sign-up, no journey planner — just
-          the truth about your line.
+        <p className="rise-in-delay-1 mx-auto mt-3 max-w-xl text-balance text-slate-500">
+          Pick your route and get a score out of 100, worked out from a year of
+          National Rail punctuality data. Free, and no sign-up.
         </p>
       </section>
 
-      <section className="rise-in-delay-2 mx-auto max-w-2xl pb-12">
+      <section className="rise-in-delay-2 mx-auto max-w-2xl pb-10">
         <StationSearch />
       </section>
 
       {examples.length > 0 && (
-        <section className="rise-in-delay-3 pb-16">
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-4">
-            See it in action
+        <section className="rise-in-delay-3 pb-8">
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3">
+            Popular routes
           </h2>
           <div className="grid gap-3 sm:grid-cols-2">
             {examples.map((r) => (
@@ -61,22 +70,22 @@ export default async function HomePage() {
         </section>
       )}
 
-      <section className="pb-16">
+      <section className="pb-10">
         <Link
           href="/leaderboard"
-          className="group flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-900 to-slate-800 p-6 text-white shadow-sm hover:shadow-md transition-all"
+          className="group flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-900 to-slate-800 px-6 py-5 text-white shadow-sm hover:shadow-md transition-all"
         >
           <span>
             <span className="block text-lg font-semibold">
               See the leaderboard
             </span>
-            <span className="mt-1 block text-sm text-slate-300">
-              The best and worst-rated routes across the UK — and London on its
-              own. Find out where your line ranks.
+            <span className="mt-0.5 block text-sm text-slate-300">
+              The ten best and ten worst routes in the country, or just the
+              London ones.
             </span>
           </span>
           <span
-            className="text-2xl text-slate-400 group-hover:text-emerald-400 transition-colors"
+            className="text-2xl text-slate-400 group-hover:text-emerald-400 group-hover:translate-x-0.5 transition-all"
             aria-hidden
           >
             →
@@ -84,26 +93,26 @@ export default async function HomePage() {
         </Link>
       </section>
 
-      <section className="pb-20 grid gap-6 sm:grid-cols-3 text-sm">
+      <section className="pb-12 grid gap-x-6 gap-y-4 sm:grid-cols-3 text-sm">
         <div>
-          <h3 className="font-semibold text-slate-900">One number</h3>
+          <h3 className="font-semibold text-slate-900">What goes into it</h3>
           <p className="mt-1 text-slate-500">
-            50% punctuality, 25% reliability, 15% delay severity, 10% how
-            often trains run. Weighted the way commuters actually feel it.
+            Half the score is punctuality. The rest is cancellations, how late
+            the late trains are, and how often trains run.
           </p>
         </div>
         <div>
-          <h3 className="font-semibold text-slate-900">Twelve months of truth</h3>
+          <h3 className="font-semibold text-slate-900">A full year</h3>
           <p className="mt-1 text-slate-500">
-            Every score is built from a full year of historical performance
-            data, month by month, so you can see the trend.
+            Scores cover the last twelve months and are shown month by month,
+            so you can see whether a line is getting better or worse.
           </p>
         </div>
         <div>
-          <h3 className="font-semibold text-slate-900">Made to share</h3>
+          <h3 className="font-semibold text-slate-900">Easy to share</h3>
           <p className="mt-1 text-slate-500">
-            Every route gets a shareable score card URL. Send it to the group
-            chat. Settle the argument.
+            Every route has a score card with its own link, which is handy
+            when the group chat is arguing about whose line is worst.
           </p>
         </div>
       </section>

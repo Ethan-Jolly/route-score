@@ -78,7 +78,7 @@ export default async function ComparePage(props: Props) {
     (b ? `&b=${routeSlug(b.from.crs, b.to.crs, band)}` : "");
 
   return (
-    <div className="mx-auto max-w-5xl px-4 py-10">
+    <div className="mx-auto max-w-5xl px-4 pt-8 pb-12">
       <div className="rise-in">
         <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900">
           Compare routes
@@ -246,7 +246,7 @@ function metricRows(a: RouteScoreResult, b: RouteScoreResult): Row[] {
   const mins = (m: number | undefined) => (m === undefined ? "—" : formatMins(m));
   return [
     {
-      label: "Route Score",
+      label: "Score",
       a: a.score,
       b: b.score,
       better: better(a.score, b.score, true),
@@ -360,7 +360,7 @@ function SideCard({ side, footer }: { side: Side; footer?: ReactNode }) {
           <p className="mt-1 text-xs text-slate-500 sm:text-sm">{r.verdict}</p>
           {r.coverage && (
             <p className="mt-2 rounded-full bg-sky-50 px-2 py-0.5 text-[11px] font-semibold text-sky-800">
-              Provisional — {r.coverage.months} months so far
+              Provisional, {r.coverage.months} months so far
             </p>
           )}
         </>

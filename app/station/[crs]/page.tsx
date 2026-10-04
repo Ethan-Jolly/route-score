@@ -22,8 +22,8 @@ export async function generateMetadata(props: Props): Promise<Metadata> {
   const station = stationByCrs(crs);
   if (!station) return { title: "Station not found" };
   return {
-    title: `${station.name} — every route scored`,
-    description: `Route Scores for every direct route from and to ${station.name}, side by side.`,
+    title: `${station.name}: every route scored`,
+    description: `Scores out of 100 for every direct train route from and to ${station.name}.`,
   };
 }
 
@@ -50,8 +50,8 @@ export default async function StationPage(props: Props) {
   const other = (r: RouteScoreResult) => (dir === "from" ? r.to : r.from);
 
   return (
-    <div className="mx-auto max-w-5xl px-4 pb-20">
-      <section className="rise-in pt-10">
+    <div className="mx-auto max-w-5xl px-4 pb-12">
+      <section className="rise-in pt-8">
         <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
           Station
         </p>
@@ -62,8 +62,8 @@ export default async function StationPage(props: Props) {
           </span>
         </h1>
         <p className="mt-2 max-w-2xl text-sm text-slate-500">
-          Every direct route we hold data for, scored side by side. Pick one to
-          see its full breakdown.
+          Every direct route we have data for, best score first. Tap one for
+          the full picture.
         </p>
 
         <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-3">
@@ -104,14 +104,14 @@ export default async function StationPage(props: Props) {
       </section>
 
       {routes.length === 0 ? (
-        <p className="rise-in-delay-1 mt-8 rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500">
+        <p className="rise-in-delay-1 mt-6 rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500">
           No {BAND_LABELS[band]} routes {dir === "from" ? "from" : "to"}{" "}
           {station.name} have been scored yet. Search for one below and
           we&apos;ll start collecting its data.
         </p>
       ) : (
         <>
-          <section className="rise-in-delay-1 mt-8 grid gap-3 grid-cols-2 lg:grid-cols-4">
+          <section className="rise-in-delay-1 mt-6 grid gap-3 grid-cols-2 lg:grid-cols-4">
             <SummaryTile label="Routes scored" value={String(routes.length)} />
             <SummaryTile
               label="Average score"
@@ -132,19 +132,19 @@ export default async function StationPage(props: Props) {
             />
           </section>
 
-          <ol className="rise-in-delay-2 mt-6 space-y-2">
+          <ol className="rise-in-delay-2 mt-4 space-y-2">
             {routes.map((r) => (
               <RouteRow key={`${r.from.crs}-${r.to.crs}`} result={r} dir={dir} />
             ))}
           </ol>
-          <p className="mt-4 text-xs text-slate-400">
-            {BAND_LABELS[band]} scores, best first. Only routes we already hold
-            data for are listed.
+          <p className="mt-3 text-xs text-slate-400">
+            {BAND_LABELS[band]} scores. Only routes someone has already looked
+            up are listed.
           </p>
         </>
       )}
 
-      <section className="mt-12 mx-auto max-w-2xl">
+      <section className="mt-10 mx-auto max-w-2xl">
         <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3">
           Route not listed?
         </h2>
@@ -190,7 +190,7 @@ function RouteRow({ result, dir }: { result: RouteScoreResult; dir: Direction })
     `every ${formatMins(result.gapMins)}`,
     result.expectedMins !== undefined && `${formatMins(result.expectedMins)} journey`,
     result.coverage && `provisional, ${result.coverage.months} months`,
-    result.limitedData && "limited data",
+    result.limitedData && "not many trains",
   ].filter(Boolean);
   return (
     <li>

@@ -9,6 +9,7 @@ import { RouteWarming } from "@/components/RouteWarming";
 import { getCachedRouteScore, parseRouteSlug } from "@/lib/provider";
 import { stationByCrs } from "@/lib/stations";
 import { BAND_LABELS } from "@/lib/score";
+import { SITE_NAME, STRAPLINE } from "@/lib/site";
 import type { Station, TimeBand } from "@/lib/types";
 
 interface Props {
@@ -69,10 +70,10 @@ export default async function ScoreCardPage(props: Props) {
   const result = r.result;
 
   return (
-    <div className="mx-auto flex min-h-[70vh] max-w-lg flex-col items-center justify-center px-4 py-12">
+    <div className="mx-auto flex min-h-[70vh] max-w-lg flex-col items-center justify-center px-4 py-8">
       <div className="rise-in w-full rounded-3xl border border-slate-200 bg-white p-8 shadow-xl shadow-slate-200/60 text-center">
         <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-400">
-          Route Score
+          {SITE_NAME}
         </p>
         <h1 className="mt-3 text-xl font-bold tracking-tight text-slate-900">
           {result.from.name}
@@ -110,7 +111,7 @@ export default async function ScoreCardPage(props: Props) {
           href={`/route/${result.from.crs}-${result.to.crs}?band=${result.band}`}
           className="text-xs font-semibold text-slate-500 hover:text-slate-900 transition-colors"
         >
-          Full dashboard →
+          See the full breakdown →
         </Link>
       </div>
 
@@ -118,7 +119,7 @@ export default async function ScoreCardPage(props: Props) {
         href="/"
         className="rise-in-delay-2 mt-8 text-xs text-slate-400 hover:text-slate-600 transition-colors"
       >
-        Score your own route at Route Score
+        {STRAPLINE}. Look up your own route
       </Link>
     </div>
   );
