@@ -183,6 +183,7 @@ trend once it has enough trains to be a fair point next to full months.
 | `/score/BTN-LBG-am-peak` | Shareable score card, ISR-cached daily, with a dynamically rendered Open Graph image so pasted links preview as the card itself |
 | `/station/BTN?band=am-peak&dir=from` | Every stored route from (or to) one station, scored and ranked — reached by searching with a single station |
 | `/compare?a=BTN-LBG-am-peak&b=BTN-VIC-am-peak` | Two routes side by side. Without `b`, offers a picker and the other stored routes from the same station |
+| `/connection?from=BTN&via=CLJ&to=RDG&band=am-peak` | A journey with one change, scored from its two direct legs (`lib/connection.ts`). Without `to`, offers the stored routes onward from the change |
 | `/leaderboard` | Best/worst routes, toggleable between the whole UK and London only |
 | `/api/route-score?from=BTN&to=LBG&band=am-peak` | JSON API. 200 with the score, or 202 `{ warming, cached, total }` while a new route is being fetched — repeat to continue |
 | `/api/route-score/fill` | One time-boxed fill step for a new route (used by the warming screen) |

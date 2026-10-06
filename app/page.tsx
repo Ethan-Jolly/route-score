@@ -52,6 +52,15 @@ export default async function HomePage() {
 
       <section className="rise-in-delay-2 mx-auto max-w-2xl pb-10">
         <StationSearch />
+        <p className="mt-3 text-center text-sm text-slate-500">
+          Have to change trains?{" "}
+          <Link
+            href="/connection"
+            className="font-semibold text-emerald-700 hover:text-emerald-800 transition-colors"
+          >
+            Score both legs as one journey
+          </Link>
+        </p>
       </section>
 
       {examples.length > 0 && (

@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { searchStations } from "@/lib/stations";
 import { BAND_LABELS } from "@/lib/score";
 import type { Station, TimeBand } from "@/lib/types";
+import { useKnownRoutes } from "./useKnownRoutes";
 
 const BANDS: TimeBand[] = ["am-peak", "pm-peak", "off-peak"];
 
@@ -20,18 +21,44 @@ export function StationField({
   selected,
   onSelect,
   autoFocus,
+  options,
+  optionsLabel,
 }: {
   label: string;
   placeholder: string;
   selected: Station | null;
   onSelect: (s: Station | null) => void;
   autoFocus?: boolean;
+  /** The stations that make a known route with the other field's choice.
+   * When given, they are all this field offers, listed before any typing. */
+  options?: Station[] | null;
+  /** Heading for that list, e.g. "Direct from Brighton". */
+  optionsLabel?: string;
 }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [highlighted, setHighlighted] = useState(0);
   const wrapRef = useRef<HTMLDivElement>(null);
-  const results = open ? searchStations(query) : [];
+  const listRef = useRef<HTMLUListElement>(null);
+
+  const pool = options && options.length > 0 ? options : null;
+  const typed = query.trim() !== "";
+  const known = !open || !pool ? [] : typed ? searchStations(query, 8, pool) : pool;
+  // The list of routes isn't the whole network, so a name that matches none
+  // of them can still be looked up — it just hasn't been scored yet.
+  const unlisted = open && known.length === 0;
+  const results = unlisted ? searchStations(query) : known;
+  const heading = !pool
+    ? null
+    : unlisted
+      ? results.length > 0
+        ? "No route scored yet, but you can try one"
+        : null
+      : optionsLabel;
+
+  useEffect(() => {
+    listRef.current?.children[highlighted]?.scrollIntoView({ block: "nearest" });
+  }, [highlighted]);
 
   useEffect(() => {
     function onClickOutside(e: MouseEvent) {
@@ -96,7 +123,13 @@ export function StationField({
         />
       )}
       {open && results.length > 0 && (
-        <ul className="absolute z-30 mt-1 w-full rounded-lg border border-slate-200 bg-white shadow-lg overflow-hidden">
+        <div className="absolute z-30 mt-1 w-full rounded-lg border border-slate-200 bg-white shadow-lg overflow-hidden">
+          {heading && (
+            <p className="border-b border-slate-100 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+              {heading}
+            </p>
+          )}
+          <ul ref={listRef} className="max-h-64 overflow-y-auto">
           {results.map((s, i) => (
             <li key={s.crs}>
               <button
@@ -113,7 +146,8 @@ export function StationField({
               </button>
             </li>
           ))}
-        </ul>
+          </ul>
+        </div>
       )}
     </div>
   );
@@ -133,6 +167,8 @@ export function StationSearch({
   const [to, setTo] = useState<Station | null>(null);
   const [band, setBand] = useState<TimeBand>(initialBand);
   const [loading, setLoading] = useState(false);
+  const fromRoutes = useKnownRoutes(from);
+  const toRoutes = useKnownRoutes(to);
 
   const ready = from && to && from.crs !== to.crs;
   // One station on its own opens that station's page of every route.
@@ -164,6 +200,8 @@ export function StationSearch({
           selected={from}
           onSelect={setFrom}
           autoFocus={autoFocus}
+          options={toRoutes?.origins}
+          optionsLabel={to ? `Direct to ${to.name}` : undefined}
         />
         <button
           type="button"
@@ -193,6 +231,8 @@ export function StationSearch({
           placeholder="e.g. London Bridge"
           selected={to}
           onSelect={setTo}
+          options={fromRoutes?.destinations}
+          optionsLabel={from ? `Direct from ${from.name}` : undefined}
         />
       </div>
 

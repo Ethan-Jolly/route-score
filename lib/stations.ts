@@ -9,12 +9,18 @@ export function stationByCrs(crs: string): Station | undefined {
   return byCrs.get(crs.toUpperCase());
 }
 
-export function searchStations(query: string, limit = 8): Station[] {
+/** Stations matching what's been typed, best matches first. `pool` narrows
+ * the search to a subset, such as the stations with a route to another one. */
+export function searchStations(
+  query: string,
+  limit = 8,
+  pool: Station[] = STATIONS
+): Station[] {
   const q = query.trim().toLowerCase();
   if (!q) return [];
   const starts: Station[] = [];
   const contains: Station[] = [];
-  for (const s of STATIONS) {
+  for (const s of pool) {
     const name = s.name.toLowerCase();
     if (s.crs.toLowerCase() === q || name.startsWith(q)) starts.push(s);
     else if (name.includes(q)) contains.push(s);

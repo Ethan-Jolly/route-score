@@ -148,13 +148,20 @@ export default async function RoutePage(props: Props) {
             ))}
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <CopyLinkButton path={shareUrl} />
           <Link
             href={`/compare?a=${slug}`}
             className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700 transition-colors"
           >
             Compare
+          </Link>
+          <Link
+            href={`/connection?from=${result.from.crs}&via=${result.to.crs}&band=${result.band}`}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:border-slate-400 transition-colors"
+            title={`Carry on from ${result.to.name} on a second train`}
+          >
+            Add a connection
           </Link>
           <Link
             href={shareUrl}

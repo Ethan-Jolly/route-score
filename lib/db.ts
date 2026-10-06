@@ -158,6 +158,33 @@ export async function getStationHourRows(
   }));
 }
 
+/** How much is stored for one route, across every period and hour. */
+export interface RouteTotal {
+  from: string;
+  to: string;
+  hours: number;
+  trains: number;
+}
+
+/** Totals for every stored route starting or ending at a station. */
+export async function getStationRouteTotals(crs: string): Promise<RouteTotal[]> {
+  const sql = db();
+  const rows = (await withRetry(
+    () => sql`
+      SELECT from_crs, to_crs, COUNT(*)::int AS hours, SUM(trains)::int AS trains
+      FROM hourly_metrics
+      WHERE from_crs = ${crs} OR to_crs = ${crs}
+      GROUP BY from_crs, to_crs
+    `
+  )) as Record<string, unknown>[];
+  return rows.map((r) => ({
+    from: r.from_crs as string,
+    to: r.to_crs as string,
+    hours: Number(r.hours),
+    trains: Number(r.trains),
+  }));
+}
+
 /** Write (or replace) hours of one route-month in a single statement. */
 export async function upsertHourRows(
   from: string,

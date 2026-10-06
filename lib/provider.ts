@@ -20,12 +20,14 @@ import {
   getHourRows,
   getServiceHint,
   getStationHourRows,
+  getStationRouteTotals,
   recordLookup,
   upsertHourRows,
   type HourRow,
 } from "./db";
 import {
   BAND_HOURS,
+  STORED_HOURS,
   aggregateMetrics,
   compositeScore,
   gapBetweenTrains,
@@ -408,6 +410,55 @@ export async function getStationRoutes(
   return {
     departures: scored.filter((r) => r.from.crs === station.crs),
     arrivals: scored.filter((r) => r.to.crs === station.crs),
+  };
+}
+
+/** The stations one station is known to have direct trains to and from. */
+export interface KnownRoutes {
+  destinations: Station[];
+  origins: Station[];
+}
+
+/** Hours stored with no trains at all before a pair is written off as having
+ * no direct service: six months of the stored day. */
+const NO_SERVICE_HOURS = 6 * STORED_HOURS.length;
+
+/**
+ * The routes we know about at a station, for narrowing the search box: the
+ * curated list plus anything stored with trains in it, less the pairs that
+ * turned out to have no direct service. Not the whole network — a station
+ * can have real routes nobody has looked up yet.
+ */
+export async function getKnownRoutes(crs: string): Promise<KnownRoutes> {
+  const station = stationByCrs(crs);
+  if (!station) return { destinations: [], origins: [] };
+
+  const known = new Set<string>();
+  for (const r of CURATED_ROUTES) {
+    if (r.from === station.crs || r.to === station.crs) known.add(`${r.from}>${r.to}`);
+  }
+  if (hspConfigured() && dbConfigured()) {
+    try {
+      await ensureSchema();
+      for (const t of await getStationRouteTotals(station.crs)) {
+        const key = `${t.from}>${t.to}`;
+        if (t.trains > 0) known.add(key);
+        else if (t.hours >= NO_SERVICE_HOURS) known.delete(key);
+      }
+    } catch {
+      // The curated list alone is still a useful answer.
+    }
+  }
+
+  const pairs = [...known].map((key) => key.split(">"));
+  const stations = (codes: string[]) =>
+    codes
+      .map((c) => stationByCrs(c))
+      .filter((s): s is Station => !!s)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  return {
+    destinations: stations(pairs.filter((p) => p[0] === station.crs).map((p) => p[1])),
+    origins: stations(pairs.filter((p) => p[1] === station.crs).map((p) => p[0])),
   };
 }
 

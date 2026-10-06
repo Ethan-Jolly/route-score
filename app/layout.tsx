@@ -43,6 +43,12 @@ export default function RootLayout({
             <nav className="flex items-center gap-4 sm:gap-5 text-sm font-medium text-slate-600">
               <SearchLink className="hidden sm:block hover:text-emerald-600 transition-colors" />
               <Link
+                href="/connection"
+                className="hidden sm:block hover:text-emerald-600 transition-colors"
+              >
+                Connections
+              </Link>
+              <Link
                 href="/leaderboard"
                 className="hover:text-emerald-600 transition-colors"
               >

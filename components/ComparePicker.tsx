@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { StationField } from "./StationSearch";
 import type { Station, TimeBand } from "@/lib/types";
+import { useKnownRoutes } from "./useKnownRoutes";
 
 /** Picks the second route of a comparison. Starts from the first route's
  * origin, since the usual question is "which line from my station?". */
@@ -21,6 +22,8 @@ export function ComparePicker({
   const [from, setFrom] = useState<Station | null>(initialFrom);
   const [to, setTo] = useState<Station | null>(null);
   const [loading, setLoading] = useState(false);
+  const fromRoutes = useKnownRoutes(from);
+  const toRoutes = useKnownRoutes(to);
 
   const ready = from && to && from.crs !== to.crs;
 
@@ -38,12 +41,16 @@ export function ComparePicker({
           placeholder="e.g. Brighton"
           selected={from}
           onSelect={setFrom}
+          options={toRoutes?.origins}
+          optionsLabel={to ? `Direct to ${to.name}` : undefined}
         />
         <StationField
           label="To"
           placeholder="e.g. London Victoria"
           selected={to}
           onSelect={setTo}
+          options={fromRoutes?.destinations}
+          optionsLabel={from ? `Direct from ${from.name}` : undefined}
         />
       </div>
       <button
