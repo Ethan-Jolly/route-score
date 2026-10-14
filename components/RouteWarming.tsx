@@ -120,12 +120,15 @@ export function RouteWarming({
         🚆
       </span>
       <h1 className="mt-5 text-lg font-bold tracking-tight text-slate-900">
-        Scoring {from.name} → {to.name}
+        You&apos;re the first person to look up this route
       </h1>
-      <p className="mt-1 text-sm text-slate-500">
-        Nobody has looked this route up before, so we&apos;re fetching its{" "}
-        {BAND_LABELS[band]} data from National Rail. The score shows up once
-        the latest few months are in, usually within a minute or two.
+      <p className="mt-0.5 text-sm font-medium text-slate-700">
+        {from.name} → {to.name}
+      </p>
+      <p className="mt-3 text-sm text-slate-500">
+        We just need to fetch its {BAND_LABELS[band]} data from National Rail,
+        so please bear with us. The score shows up once the latest few months
+        are in, usually within a minute or two.
       </p>
 
       <div className="mt-6 h-2.5 w-full max-w-xs overflow-hidden rounded-full bg-slate-100">
@@ -169,8 +172,9 @@ export function RouteWarmingInline({
   return (
     <div className="my-6 w-full max-w-xs">
       <p className="text-sm text-slate-500">
-        Fetching {BAND_LABELS[band]} data from National Rail. The score shows
-        up once the latest few months are in.
+        You&apos;re the first person to look up this route. We just need to
+        fetch its {BAND_LABELS[band]} data from National Rail, so please bear
+        with us.
       </p>
       <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-slate-100">
         <div
