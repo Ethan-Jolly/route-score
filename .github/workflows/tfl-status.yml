@@ -1,0 +1,42 @@
+name: Tube status
+
+# Polls TfL line status every two minutes and counts it per line and hour, to
+# build the history a Tube leg's reliability is worked out from (TfL publishes
+# none). Each run polls for 55 minutes; a run that starts late or is skipped
+# just leaves fewer samples for that hour, which the figures allow for.
+#
+# Like the ingest, this relies on the repo being public for free minutes
+# (about 24 hours of runner time a day). GitHub pauses scheduled workflows
+# after 60 days with no commits; re-enable from the Actions tab.
+
+on:
+  schedule:
+    - cron: "4 * * * *" # hourly (off the hour: scheduled runs start more reliably)
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "How long to poll for"
+        default: "55"
+
+concurrency:
+  group: tfl-status
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22 # runs the TypeScript script directly (needs >= 22.18)
+          cache: npm
+      - run: npm ci
+      - name: Poll
+        env:
+          # Set in repo Settings → Secrets and variables → Actions.
+          TFL_APP_KEY: ${{ secrets.TFL_APP_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          MINUTES: ${{ inputs.minutes || '55' }}
+        run: node scripts/tfl-status.ts --minutes="$MINUTES"

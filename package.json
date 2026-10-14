@@ -8,6 +8,8 @@
     "start": "next start",
     "lint": "next lint",
     "ingest": "node --env-file-if-exists=.env.local scripts/ingest.ts",
+    "tfl-status": "node --env-file-if-exists=.env.local scripts/tfl-status.ts",
+    "build:tube-stations": "node --env-file-if-exists=.env.local scripts/build-tube-stations.mjs",
     "validate:routes": "node scripts/validate-routes.mjs"
   },
   "dependencies": {

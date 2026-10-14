@@ -97,6 +97,29 @@ async function createSchema(): Promise<void> {
       PRIMARY KEY (from_crs, to_crs, band)
     )
   `);
+  // TfL line status, polled every couple of minutes and counted per line,
+  // London day and hour, so a missed poll just means fewer samples.
+  await withRetry(() => sql`
+    CREATE TABLE IF NOT EXISTS tfl_line_hours (
+      line    TEXT     NOT NULL,
+      day     DATE     NOT NULL,
+      hour    SMALLINT NOT NULL,
+      samples INTEGER  NOT NULL DEFAULT 0,
+      good    INTEGER  NOT NULL DEFAULT 0,
+      minor   INTEGER  NOT NULL DEFAULT 0,
+      severe  INTEGER  NOT NULL DEFAULT 0,
+      closed  INTEGER  NOT NULL DEFAULT 0,
+      PRIMARY KEY (line, day, hour)
+    )
+  `);
+  // Planned Tube legs, so the journey planner isn't asked on every page view.
+  await withRetry(() => sql`
+    CREATE TABLE IF NOT EXISTS tfl_journeys (
+      key        TEXT  NOT NULL PRIMARY KEY,
+      data       JSONB NOT NULL,
+      fetched_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
 }
 
 function rowToHour(r: Record<string, unknown>): HourRow {
@@ -389,4 +412,108 @@ export async function getPopularRoutes(limit = 50): Promise<PopularRoute[]> {
     band: r.band as TimeBand,
     lookups: Number(r.lookups),
   }));
+}
+
+// ---- TfL ----------------------------------------------------------------------
+
+/** One poll of every line's status, added to the counts for its London hour. */
+export async function addLineSamples(
+  day: string,
+  hour: number,
+  samples: { line: string; category: "good" | "minor" | "severe" | "closed" }[]
+): Promise<void> {
+  if (samples.length === 0) return;
+  const sql = db();
+  const is = (c: string) => samples.map((s) => (s.category === c ? 1 : 0));
+  await withRetry(
+    () => sql`
+      INSERT INTO tfl_line_hours (line, day, hour, samples, good, minor, severe, closed)
+      SELECT t.line, ${day}::date, ${hour}, 1, t.good, t.minor, t.severe, t.closed
+      FROM unnest(
+        ${samples.map((s) => s.line)}::text[],
+        ${is("good")}::int[],
+        ${is("minor")}::int[],
+        ${is("severe")}::int[],
+        ${is("closed")}::int[]
+      ) AS t(line, good, minor, severe, closed)
+      ON CONFLICT (line, day, hour) DO UPDATE SET
+        samples = tfl_line_hours.samples + 1,
+        good = tfl_line_hours.good + EXCLUDED.good,
+        minor = tfl_line_hours.minor + EXCLUDED.minor,
+        severe = tfl_line_hours.severe + EXCLUDED.severe,
+        closed = tfl_line_hours.closed + EXCLUDED.closed
+    `
+  );
+}
+
+/** A line's status counts over a window, weekdays only. */
+export interface LineHistory {
+  line: string;
+  samples: number;
+  good: number;
+  minor: number;
+  severe: number;
+  closed: number;
+  /** Distinct weekdays with at least one sample in the hours asked about. */
+  days: number;
+  /** Earliest such day (YYYY-MM-DD). */
+  since: string;
+}
+
+/** Weekday status history of some lines within the given London hours, from
+ * `sinceDay` on. Lines never polled are simply absent. */
+export async function getLineHistory(
+  lines: string[],
+  hours: number[],
+  sinceDay: string
+): Promise<LineHistory[]> {
+  if (lines.length === 0) return [];
+  const sql = db();
+  const rows = (await withRetry(
+    () => sql`
+      SELECT line,
+             SUM(samples)::int AS samples, SUM(good)::int AS good,
+             SUM(minor)::int AS minor, SUM(severe)::int AS severe,
+             SUM(closed)::int AS closed,
+             COUNT(DISTINCT day)::int AS days,
+             to_char(MIN(day), 'YYYY-MM-DD') AS since
+      FROM tfl_line_hours
+      WHERE line = ANY(${lines}) AND hour = ANY(${hours})
+        AND day >= ${sinceDay}::date AND EXTRACT(ISODOW FROM day) < 6
+      GROUP BY line
+    `
+  )) as Record<string, unknown>[];
+  return rows.map((r) => ({
+    line: r.line as string,
+    samples: Number(r.samples),
+    good: Number(r.good),
+    minor: Number(r.minor),
+    severe: Number(r.severe),
+    closed: Number(r.closed),
+    days: Number(r.days),
+    since: r.since as string,
+  }));
+}
+
+/** A stored Tube journey, if fetched within `maxAgeDays`. */
+export async function getTflJourney<T>(key: string, maxAgeDays: number): Promise<T | null> {
+  const sql = db();
+  const rows = (await withRetry(
+    () => sql`
+      SELECT data FROM tfl_journeys
+      WHERE key = ${key} AND fetched_at > now() - make_interval(days => ${maxAgeDays})
+    `
+  )) as Record<string, unknown>[];
+  return rows.length ? (rows[0].data as T) : null;
+}
+
+export async function putTflJourney(key: string, data: unknown): Promise<void> {
+  const sql = db();
+  await withRetry(
+    () => sql`
+      INSERT INTO tfl_journeys (key, data, fetched_at)
+      VALUES (${key}, ${JSON.stringify(data)}::jsonb, now())
+      ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, fetched_at = now()
+    `
+  );
 }

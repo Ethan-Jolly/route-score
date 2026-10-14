@@ -8,6 +8,9 @@ import { RouteWarmingInline } from "@/components/RouteWarming";
 import { getCachedRouteScore, getStationRoutes } from "@/lib/provider";
 import { scoreConnection, type ConnectionResult } from "@/lib/connection";
 import { stationByCrs } from "@/lib/stations";
+import { getTubeLeg, type TubeOutcome } from "@/lib/tube";
+import { interchangeFor, isTubeId, tubeAsStation, tubeStationById } from "@/lib/tubeStations";
+import { LineDot, TubeLegCard, collectingNote } from "@/components/TubeLegCard";
 import {
   BAND_LABELS,
   TIER_COLORS,
@@ -32,19 +35,32 @@ interface Leg {
   outcome: Awaited<ReturnType<typeof getCachedRouteScore>>;
 }
 
-/** The stations the URL names, dropping any that are unknown or repeated. */
+/** The stations the URL names, dropping any that are unknown, repeated or
+ * don't fit together. `from` or `to` can be a Tube station (by its TfL id),
+ * making that leg a Tube leg; the change then has to be a mainline station
+ * with the Tube nearby. */
 async function readParams(props: Props) {
   const params = await props.searchParams;
-  const station = (p: Param) =>
-    typeof p === "string" ? (stationByCrs(p.toUpperCase()) ?? null) : null;
+  const station = (p: Param): Station | null => {
+    if (typeof p !== "string") return null;
+    if (isTubeId(p)) {
+      const tube = tubeStationById(p);
+      return tube ? tubeAsStation(tube) : null;
+    }
+    return stationByCrs(p.toUpperCase()) ?? null;
+  };
   const band: TimeBand =
     typeof params.band === "string" && isTimeBand(params.band) ? params.band : "am-peak";
   const from = station(params.from);
   let via = station(params.via);
   let to = station(params.to);
-  if (via && via.crs === from?.crs) via = null;
+  if (via && (via.crs === from?.crs || isTubeId(via.crs))) via = null;
   if (to && (to.crs === from?.crs || to.crs === via?.crs)) to = null;
-  return { from, via, to, band };
+  if (to && from && isTubeId(from.crs) && isTubeId(to.crs)) to = null;
+  const tube: "none" | "first" | "second" =
+    from && isTubeId(from.crs) ? "first" : to && isTubeId(to.crs) ? "second" : "none";
+  if (via && tube !== "none" && !interchangeFor(via.crs)) via = null;
+  return { from, via, to, band, tube };
 }
 
 const scored = (leg: Leg): RouteScoreResult | null =>
@@ -57,10 +73,18 @@ export async function generateMetadata(props: Props): Promise<Metadata> {
 }
 
 export default async function ConnectionPage(props: Props) {
-  const { from, via, to, band } = await readParams(props);
+  const { from, via, to, band, tube } = await readParams(props);
 
   let legs: [Leg, Leg] | null = null;
-  if (from && via && to) {
+  let tubeJourney: TubeJourneyData | null = null;
+  if (from && via && to && tube !== "none") {
+    const [railFrom, railTo] = tube === "second" ? [from, via] : [via, to];
+    const [outcome, tubeOutcome] = await Promise.all([
+      getCachedRouteScore(railFrom.crs, railTo.crs, band),
+      tube === "second" ? getTubeLeg(via, to, band) : getTubeLeg(from, via, band),
+    ]);
+    tubeJourney = { mode: tube, rail: { from: railFrom, to: railTo, outcome }, tube: tubeOutcome };
+  } else if (from && via && to) {
     const [first, second] = await Promise.all([
       getCachedRouteScore(from.crs, via.crs, band),
       getCachedRouteScore(via.crs, to.crs, band),
@@ -101,8 +125,8 @@ export default async function ConnectionPage(props: Props) {
           Connection builder
         </h1>
         <p className="mt-1 text-slate-500">
-          Have to change trains? Put the two legs together and get one score
-          for the whole journey.
+          Have to change trains, or take the Tube at one end? Put the two
+          legs together and see the whole journey.
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           {BANDS.map((b) => (
@@ -157,6 +181,16 @@ export default async function ConnectionPage(props: Props) {
             ))}
           </ul>
         </section>
+      )}
+
+      {tubeJourney && from && via && to && (
+        <TubeJourney
+          journey={tubeJourney}
+          from={from}
+          via={via}
+          to={to}
+          band={band}
+        />
       )}
 
       {legs && from && via && to && (
@@ -400,4 +434,197 @@ function LegCard({ leg, band, label }: { leg: Leg; band: TimeBand; label: string
       )}
     </div>
   );
+}
+
+/** A journey with one train and one Tube leg. The train is scored as usual;
+ * the Tube has no comparable punctuality data, so it adds its time to the
+ * journey and its own reliability figures beside the score. */
+interface TubeJourneyData {
+  mode: "first" | "second";
+  rail: Leg;
+  tube: TubeOutcome;
+}
+
+function TubeJourney({
+  journey,
+  from,
+  via,
+  to,
+  band,
+}: {
+  journey: TubeJourneyData;
+  from: Station;
+  via: Station;
+  to: Station;
+  band: TimeBand;
+}) {
+  const tube = journey.mode;
+  const rail = scored(journey.rail);
+  const leg = journey.tube.ok ? journey.tube.leg : null;
+  const railCard = <LegCard leg={journey.rail} band={band} label="Train" />;
+  const tubeCard = (
+    <TubeLegCard
+      outcome={journey.tube}
+      fromName={tube === "first" ? from.name : via.name}
+      toName={tube === "first" ? via.name : to.name}
+      band={band}
+      label="Tube"
+    />
+  );
+  return (
+    <>
+      {rail && leg && (
+        <TubeHero rail={rail} leg={leg} tube={tube} from={from} via={via} to={to} band={band} />
+      )}
+
+      <div className="rise-in-delay-2 mt-6 grid grid-cols-2 gap-3 sm:gap-6">
+        {tube === "first" ? (
+          <>
+            {tubeCard}
+            {railCard}
+          </>
+        ) : (
+          <>
+            {railCard}
+            {tubeCard}
+          </>
+        )}
+      </div>
+
+      <p className="mt-6 max-w-2xl text-xs text-slate-400">
+        How it&apos;s worked out: the score is the train&apos;s, from National
+        Rail&apos;s punctuality records. The Tube has nothing comparable, so it
+        isn&apos;t in the score. Instead it adds its time to the journey, and
+        we show how often its lines ran a good service: we record every
+        line&apos;s status every couple of minutes and count weekdays in the{" "}
+        {BAND_LABELS[band]}. A line counts as disrupted even when the trouble is
+        on a part of it you don&apos;t use. The Tube route, the walk from the
+        mainline platforms and the time between trains come from TfL&apos;s
+        journey planner and timetables. Powered by TfL Open Data.
+      </p>
+    </>
+  );
+}
+
+function TubeHero({
+  rail,
+  leg,
+  tube,
+  from,
+  via,
+  to,
+  band,
+}: {
+  rail: RouteScoreResult;
+  leg: Extract<TubeOutcome, { ok: true }>["leg"];
+  tube: "first" | "second";
+  from: Station;
+  via: Station;
+  to: Station;
+  band: TimeBand;
+}) {
+  // The first leg's wait isn't counted, as with two trains: you'd time
+  // leaving to catch it. The second leg's is half the gap between its trains.
+  const changeMins = tube === "second" ? leg.waitMins : Math.round(rail.gapMins / 2);
+  const totalMins =
+    rail.expectedMins === undefined ? undefined : rail.expectedMins + leg.minutes + changeMins;
+  const lineNames = [...new Set(leg.rides.map((r) => r.lineName))];
+  return (
+    <div className="rise-in-delay-1 mt-6 grid items-center gap-x-8 gap-y-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm lg:grid-cols-[auto_1fr]">
+      <div className="mx-auto text-center">
+        <ScoreDial score={rail.score} />
+        <p className="mt-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+          Train score
+        </p>
+      </div>
+      <div className="text-center lg:text-left">
+        <h2 className="text-lg font-bold tracking-tight text-slate-900 sm:text-xl">
+          {from.name} <span className="font-normal text-slate-300">→</span> {to.name}
+        </h2>
+        <p className="text-sm text-slate-500">
+          {tube === "second"
+            ? `Train to ${via.name}, then the Tube`
+            : `Tube to ${via.name}, then the train`}
+        </p>
+        <div className="mt-3 flex flex-wrap items-center justify-center gap-2 lg:justify-start">
+          <span
+            className="text-xs font-bold uppercase tracking-wider"
+            style={{ color: TIER_COLORS[tierFor(rail.score)] }}
+          >
+            {tierFor(rail.score)}
+          </span>
+          <TrendBadge trend={rail.trend} />
+          {rail.coverage && (
+            <span className="rounded-full bg-sky-50 px-2 py-0.5 text-[11px] font-semibold text-sky-800">
+              Provisional
+            </span>
+          )}
+        </div>
+        <p className="mt-2 text-xl font-semibold text-slate-900 sm:text-2xl">{rail.verdict}</p>
+        <dl className="mt-4 grid gap-3 text-left sm:grid-cols-2">
+          <div className="rounded-xl bg-slate-50 px-4 py-3">
+            <dt className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+              Expected journey time
+            </dt>
+            {totalMins !== undefined && rail.journeyMins !== undefined ? (
+              <>
+                <dd className="mt-0.5 text-lg font-bold tabular-nums text-slate-900">
+                  About {formatMins(totalMins)}
+                </dd>
+                <dd className="text-xs text-slate-500">
+                  {formatMins(rail.expectedMins!)} by train (with its average delay),{" "}
+                  {formatMins(leg.minutes)} on the Tube and walking, around{" "}
+                  {formatMins(changeMins)} waiting at {via.name}
+                </dd>
+              </>
+            ) : (
+              <>
+                <dd className="mt-0.5 text-lg font-bold text-slate-400">Coming soon</dd>
+                <dd className="text-xs text-slate-500">
+                  We&apos;re still collecting timetable data for this train
+                </dd>
+              </>
+            )}
+          </div>
+          <div className="rounded-xl bg-slate-50 px-4 py-3">
+            <dt className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+              {leg.rides.map((r, i) => (
+                <LineDot key={i} line={r.line} />
+              ))}
+              Tube good service
+            </dt>
+            {leg.rides.length === 0 ? (
+              <dd className="mt-0.5 text-sm text-slate-500">
+                No Tube needed: it&apos;s quicker to walk.
+              </dd>
+            ) : leg.goodPct !== null && leg.severePct !== null ? (
+              <>
+                <dd className="mt-0.5 text-lg font-bold tabular-nums text-slate-900">
+                  {Math.round(leg.goodPct)}% of the time
+                </dd>
+                <dd className="text-xs text-slate-500">
+                  {lineNames.join(" and ")} {lineNames.length > 1 ? "lines" : "line"},{" "}
+                  {BAND_LABELS[band]} on weekdays since {formatDay(leg.lines.map((l) => l.since).sort()[0])}.
+                  Severely disrupted or closed {Math.round(leg.severePct)}% of the time.
+                </dd>
+              </>
+            ) : (
+              <>
+                <dd className="mt-0.5 text-lg font-bold text-slate-400">Collecting data</dd>
+                <dd className="text-xs text-slate-500">{collectingNote(leg)}</dd>
+              </>
+            )}
+          </div>
+        </dl>
+      </div>
+    </div>
+  );
+}
+
+function formatDay(day: string): string {
+  return new Date(`${day}T12:00:00Z`).toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
 }

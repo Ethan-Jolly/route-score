@@ -61,6 +61,7 @@ export default function RootLayout({
         <footer className="border-t border-slate-200/80 px-4 py-5 text-center text-xs text-slate-400">
           <p>
             Scores come from National Rail&apos;s historical performance data.
+            Tube journeys are Powered by TfL Open Data.
           </p>
         </footer>
         <Analytics />

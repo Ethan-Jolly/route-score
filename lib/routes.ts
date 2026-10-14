@@ -14,13 +14,14 @@
  * build error, so this list stays honest as stations change.
  *
  * A route is a "London" route (for the London leaderboard) iff one of its
- * endpoints is a London terminal — see LONDON_TERMINALS.
+ * endpoints is a London terminal — see LONDON_TERMINALS — or it is one of the
+ * London Overground / Elizabeth line routes in LONDON_RAIL.
  */
 
 export interface CuratedRoute {
   from: string;
   to: string;
-  /** True when one endpoint is a London terminal. */
+  /** True when one endpoint is a London terminal, or it's a LONDON_RAIL route. */
   london: boolean;
 }
 
@@ -117,6 +118,39 @@ const LONDON_DESTINATIONS: Record<string, string[]> = {
 };
 
 /**
+ * London Overground and the Elizabeth line, which HSP records like any other
+ * operator. Every pair here had direct services both ways when checked
+ * against HSP (October 2026). The Elizabeth line's central tunnel
+ * (Paddington–Whitechapel, and on to Abbey Wood) isn't in HSP, so its trains
+ * only appear between stations outside it, e.g. Stratford → Heathrow. Enfield
+ * Town and the Liberty line returned nothing and are left out.
+ */
+const LONDON_RAIL: Record<string, string[]> = {
+  // Lioness (Euston–Watford Junction)
+  EUS: ["WFJ", "HRW", "WMB", "QPW", "BSH", "KNL"],
+  // Suffragette (Gospel Oak–Barking)
+  GPO: ["BKG", "WMW", "BHO", "UHL"],
+  // Weaver (Liverpool Street–Chingford/Cheshunt)
+  LST: ["CHI", "HAC", "WHC", "SVS", "BET"],
+  HAC: ["CHI", "WHC"],
+  // Windrush (Highbury & Islington / Dalston Junction southwards)
+  HHY: ["CLJ", "CYP", "WCY", "SDC", "ZCW"],
+  DLJ: ["CYP", "WCY", "NWX", "CLJ", "PMR", "ZCW", "SQE"],
+  // Mildmay (Stratford–Richmond/Clapham Junction) and the Elizabeth line east
+  SRA: [
+    "RMD", "CLJ", "WIJ", "HDH", "CMD", "KWG", "SPB", "IMW", "WHD", "HHY",
+    "SNF", "IFD", "BRE", "GDP", "RMF", "HWV", "HAY", "EAL",
+  ],
+  CLJ: ["WIJ", "SPB", "IMW"],
+  // Elizabeth line west (Heathrow Express shares Paddington–Heathrow T5)
+  PAD: ["HAY", "EAL", "STL", "HWV"],
+  // Elizabeth line across London
+  SNF: ["HWV", "EAL", "HAY"],
+  RMF: ["HWV", "EAL"],
+  IFD: ["EAL", "HWV"],
+};
+
+/**
  * Major UK intercity pairs (non-London). Encoded hub → destinations; expanded
  * to both directions. Dedup with the London set happens in buildRoutes().
  */
@@ -168,7 +202,7 @@ export function buildRoutes(): CuratedRoute[] {
   const routes: CuratedRoute[] = [];
   const terminals = new Set(Object.keys(LONDON_TERMINALS));
 
-  const add = (from: string, to: string) => {
+  const add = (from: string, to: string, london = false) => {
     if (from === to) return;
     const key = `${from}>${to}`;
     if (seen.has(key)) return;
@@ -176,7 +210,7 @@ export function buildRoutes(): CuratedRoute[] {
     routes.push({
       from,
       to,
-      london: terminals.has(from) || terminals.has(to),
+      london: london || terminals.has(from) || terminals.has(to),
     });
   };
 
@@ -184,6 +218,12 @@ export function buildRoutes(): CuratedRoute[] {
     for (const d of dests) {
       add(terminal, d);
       add(d, terminal);
+    }
+  }
+  for (const [hub, dests] of Object.entries(LONDON_RAIL)) {
+    for (const d of dests) {
+      add(hub, d, true);
+      add(d, hub, true);
     }
   }
   for (const [hub, dests] of Object.entries(INTERCITY)) {
@@ -201,4 +241,15 @@ export const CURATED_ROUTES: CuratedRoute[] = buildRoutes();
 /** True if a CRS is a London terminal. */
 export function isLondonTerminal(crs: string): boolean {
   return crs.toUpperCase() in LONDON_TERMINALS;
+}
+
+const LONDON_ROUTES = new Set(
+  CURATED_ROUTES.filter((r) => r.london).map((r) => `${r.from}>${r.to}`)
+);
+
+/** True if a route belongs on the London leaderboard. */
+export function isLondonRoute(from: string, to: string): boolean {
+  return (
+    isLondonTerminal(from) || isLondonTerminal(to) || LONDON_ROUTES.has(`${from}>${to}`)
+  );
 }

@@ -23,6 +23,8 @@ export function StationField({
   autoFocus,
   options,
   optionsLabel,
+  allowUnlisted = true,
+  codeOf = (s) => s.crs,
 }: {
   label: string;
   placeholder: string;
@@ -34,6 +36,11 @@ export function StationField({
   options?: Station[] | null;
   /** Heading for that list, e.g. "Direct from Brighton". */
   optionsLabel?: string;
+  /** Offer every station when the typed name matches none of `options`.
+   * Off when only those stations can work, e.g. Tube stations. */
+  allowUnlisted?: boolean;
+  /** The short code shown beside each name. */
+  codeOf?: (s: Station) => string;
 }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
@@ -46,7 +53,7 @@ export function StationField({
   const known = !open || !pool ? [] : typed ? searchStations(query, 8, pool) : pool;
   // The list of routes isn't the whole network, so a name that matches none
   // of them can still be looked up — it just hasn't been scored yet.
-  const unlisted = open && known.length === 0;
+  const unlisted = open && known.length === 0 && allowUnlisted;
   const results = unlisted ? searchStations(query) : known;
   const heading = !pool
     ? null
@@ -89,7 +96,7 @@ export function StationField({
         >
           <span>
             {selected.name}{" "}
-            <span className="text-slate-400 font-mono text-xs">{selected.crs}</span>
+            <span className="text-slate-400 font-mono text-xs">{codeOf(selected)}</span>
           </span>
           <span className="text-slate-300 text-xs" aria-hidden>✕</span>
         </button>
@@ -142,7 +149,7 @@ export function StationField({
                 }`}
               >
                 <span>{s.name}</span>
-                <span className="font-mono text-xs text-slate-400">{s.crs}</span>
+                <span className="font-mono text-xs text-slate-400">{codeOf(s)}</span>
               </button>
             </li>
           ))}

@@ -5,7 +5,7 @@
  * scored on the same window as a route page: the 12 complete months plus the
  * month in progress.
  * The UK board is national; the London board is the subset touching a London
- * terminal. A route needs enough months and enough weekly service to qualify,
+ * terminal, plus the London Overground and Elizabeth line routes. A route needs enough months and enough weekly service to qualify,
  * so the boards reflect real, well-travelled routes rather than statistical
  * flukes on an obscure pair.
  *
@@ -26,7 +26,7 @@ import { dbConfigured, ensureSchema, getRouteAggregates } from "./db";
 import { currentMonth, weekdaysBetween } from "./periods";
 import { hspConfigured } from "./hsp";
 import { demoMonthlyMetrics } from "./demo";
-import { CURATED_ROUTES, isLondonTerminal } from "./routes";
+import { CURATED_ROUTES, isLondonRoute } from "./routes";
 import { stationByCrs } from "./stations";
 import type { Station, TimeBand } from "./types";
 
@@ -118,7 +118,7 @@ function toEntry(a: RouteAggregate): LeaderboardEntry | null {
       1,
       Math.round(a.totalTrains / a.months / WEEKDAYS_PER_MONTH)
     ),
-    london: isLondonTerminal(a.from) || isLondonTerminal(a.to),
+    london: isLondonRoute(a.from, a.to),
   };
 }
 

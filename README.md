@@ -31,6 +31,7 @@ Open http://localhost:3000.
 |---|---|
 | `HSP_EMAIL` + `HSP_PASSWORD` | Use **live** National Rail HSP data. Without them, **demo** mode (deterministic synthetic data) runs. |
 | `DATABASE_URL` (Neon Postgres) | Where everything fetched from HSP is stored. Live data needs it; without it the app stays in demo mode. |
+| `TFL_APP_KEY` | TfL Unified API key (free, from https://api-portal.tfl.gov.uk). Enables Tube legs in the connection builder and the Tube status collector. |
 
 ## How data gets in
 
@@ -122,12 +123,54 @@ scheduled workflows in a public repo after 60 days without a commit; re-enable
 it from the Actions tab. You can start a run by hand there too (`minutes`
 input, up to ~340).
 
-**Scale.** The curated universe is ~1,000 routes × 12 months. A route-month
+**Scale.** The curated universe is ~1,100 routes × 12 months. A route-month
 costs about 1.3s per timetabled service: roughly a minute for a quiet
 intercity route, about seven minutes for the busiest commuter routes. Re-fetching
 a month in progress costs the same as a whole month, so keeping every route's
 month-to-date current is ongoing work, not a one-off: the schedule above gives
 about 40 hours of HSP time a day for the first fill and then for refreshing.
+
+## Tube legs
+
+HSP is National Rail only. London Overground and the Elizabeth line are in it
+(as operators LO and XR) and are scored like any other route, except for the
+Elizabeth line's central tunnel, which isn't. The Tube isn't, so the
+connection builder handles a Tube leg differently: one leg of a journey can be
+on the Tube (`/connection?from=BTN&via=VIC&to=940GZZLUOXC`, where a Tube
+station is given by its TfL id), and the change must be a mainline station
+with the Tube a short walk away.
+
+- **Route, walk and time** come from TfL's journey planner, planned from the
+  mainline station's location so the walk from the platforms counts. They're
+  stored in `tfl_journeys` for a week.
+- **Frequency** is counted from TfL's weekday timetable for the first line
+  taken; the wait is half the gap, as with a train.
+- **Reliability** comes from a history we build ourselves, since TfL publishes
+  none: `scripts/tfl-status.ts` polls every line's status every two minutes
+  and counts it per line, London day and hour in `tfl_line_hours` (good /
+  minor / severe / closed). A Tube leg shows the share of weekday samples in
+  its band each line had a good service, once a line has 5 weekdays of
+  history. A line counts as disrupted even when the problem is on a branch
+  the journey doesn't use.
+- The **score** stays the train's. Tube figures are shown beside it and its
+  time is added to the expected journey time, but it isn't folded into the
+  score, because a line-status share isn't comparable with a punctuality
+  percentage.
+
+```bash
+npm run tfl-status                      # poll for 55 minutes, reads .env.local
+npm run tfl-status -- --once            # one poll
+npm run build:tube-stations             # rebuild lib/data/tube-stations.json
+```
+
+`.github/workflows/tfl-status.yml` runs the collector hourly (about 24 hours of
+runner time a day, free on a public repo). It needs the `TFL_APP_KEY` and
+`DATABASE_URL` repository secrets. A run that starts late or is skipped just
+leaves fewer samples for that hour.
+
+`lib/data/tube-stations.json` holds every Tube station and the mainline
+stations within 400 m of one, matched to CRS codes by name. Rebuild it when
+TfL opens or renames a station.
 
 ### Live-data approximations (worth knowing)
 
@@ -184,6 +227,7 @@ trend once it has enough trains to be a fair point next to full months.
 | `/station/BTN?band=am-peak&dir=from` | Every stored route from (or to) one station, scored and ranked — reached by searching with a single station |
 | `/compare?a=BTN-LBG-am-peak&b=BTN-VIC-am-peak` | Two routes side by side. Without `b`, offers a picker and the other stored routes from the same station |
 | `/connection?from=BTN&via=CLJ&to=RDG&band=am-peak` | A journey with one change, scored from its two direct legs (`lib/connection.ts`). Without `to`, offers the stored routes onward from the change |
+| `/connection?from=BTN&via=VIC&to=940GZZLUOXC&band=am-peak` | The same with a Tube leg: `from` or `to` is a Tube station's TfL id (`lib/tube.ts`) |
 | `/leaderboard` | Best/worst routes, toggleable between the whole UK and London only |
 | `/api/route-score?from=BTN&to=LBG&band=am-peak` | JSON API. 200 with the score, or 202 `{ warming, cached, total }` while a new route is being fetched — repeat to continue |
 | `/api/route-score/fill` | One time-boxed fill step for a new route (used by the warming screen) |
@@ -196,9 +240,10 @@ error — Route Score rates direct journeys only.
 
 `/leaderboard` ranks the best and worst-performing routes, toggleable between
 the whole UK and London-only. Rankings are drawn from a **curated universe** of
-~1,000 real routes in `lib/routes.ts` (every London terminal against the real
-destinations on its lines, plus the major UK intercity city pairs, both
-directions). All are ranked on **both commuter peaks combined** (06:00–08:59
+~1,100 real routes in `lib/routes.ts` (every London terminal against the real
+destinations on its lines, London Overground and Elizabeth line routes, plus
+the major UK intercity city pairs, both directions). The London board is the
+routes touching a London terminal plus the Overground and Elizabeth line ones. All are ranked on **both commuter peaks combined** (06:00–08:59
 and 16:00–18:59) so scores are directly comparable, and a route needs ≥6 fully
 stored months of real service to appear.
 
@@ -208,6 +253,7 @@ stored months of real service to appear.
 2. **Import** the repo at https://vercel.com/new.
 3. **Environment variables** (Project → Settings → Environment Variables):
    - `HSP_EMAIL`, `HSP_PASSWORD` — your National Rail Data Portal login.
+   - `TFL_APP_KEY` — your TfL API key, for Tube legs.
    - `DATABASE_URL` — auto-added if you provision Neon via Vercel's Storage
      tab; otherwise paste your Neon connection string.
    - `NEXT_PUBLIC_SITE_URL` — your production URL (e.g. `https://routescore.app`)
