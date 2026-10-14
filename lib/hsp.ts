@@ -69,6 +69,10 @@ interface HspMetricsResponse {
 /** The call was too big for the time allowed — retry it as smaller slices. */
 export class HspTimeoutError extends Error {}
 
+/** HSP crashed on the query (500). Some windows trip it on every call — bad
+ * data for one service — so narrowing the window steers around it. */
+export class HspServerError extends Error {}
+
 export function hspConfigured(): boolean {
   return Boolean(process.env.HSP_EMAIL && process.env.HSP_PASSWORD);
 }
@@ -172,9 +176,8 @@ async function fetchWindow(
     timeoutMs
   );
   if (!res.ok) {
-    throw new Error(
-      `HSP serviceMetrics ${res.status} for ${from}-${to} ${range.from}..${range.to} ${fromTime}-${toTime}`
-    );
+    const message = `HSP serviceMetrics ${res.status} for ${from}-${to} ${range.from}..${range.to} ${fromTime}-${toTime}`;
+    throw res.status === 500 ? new HspServerError(message) : new Error(message);
   }
   const data = (await res.json()) as HspMetricsResponse;
   return data.Services ?? [];
@@ -264,11 +267,12 @@ const MIN_SPAN_MINUTES = 15;
 
 /**
  * Fetch the given departure hours of a route for a date range, in as few HSP
- * calls as its service density allows. Chunks that time out are halved, down
- * to 15-minute slices of a single hour. Returns the rows fetched and whether
- * every requested hour was covered (false only when `deadline` cut it short);
- * `timedOut` says a call was too big for `timeoutMs`, so a caller on a tight
- * budget can come back with a smaller `maxSpanMinutes`.
+ * calls as its service density allows. Chunks that time out or crash HSP are
+ * halved, down to 15-minute slices of a single hour. Returns the rows fetched
+ * and whether every requested hour was covered (false only when `deadline` cut
+ * it short); `timedOut` says a call was too big for `timeoutMs`, so a caller on
+ * a tight budget can come back with a smaller `maxSpanMinutes`. `skipped` lists
+ * 15-minute slices HSP still crashed on: their hour is stored without them.
  */
 export async function fetchHspHours(
   from: string,
@@ -276,7 +280,7 @@ export async function fetchHspHours(
   range: DateRange,
   hours: number[],
   opts: FetchHoursOptions = {}
-): Promise<{ rows: HourCounts[]; complete: boolean; timedOut: boolean }> {
+): Promise<{ rows: HourCounts[]; complete: boolean; timedOut: boolean; skipped: string[] }> {
   const target = opts.targetServices ?? 30;
   const timeoutMs = opts.timeoutMs ?? 110_000;
   const maxSpan = opts.maxSpanMinutes ?? Infinity;
@@ -287,7 +291,8 @@ export async function fetchHspHours(
   const pending = [...new Set(hours)].sort((a, b) => a - b);
   const out: HourCounts[] = [];
   let timedOut = false;
-  const partial = () => ({ rows: out, complete: false, timedOut });
+  const skipped: string[] = [];
+  const partial = () => ({ rows: out, complete: false, timedOut, skipped });
 
   const land = async (rows: HourCounts[]) => {
     for (const r of rows) known.set(r.hour, r.services);
@@ -296,22 +301,35 @@ export async function fetchHspHours(
   };
   const expired = () => opts.deadline !== undefined && Date.now() >= opts.deadline;
 
-  /** One hour, split into sub-hour slices when it is too dense for one call. */
+  /** One hour, split into sub-hour slices when it is too dense for one call.
+   * At the smallest span a slice HSP crashes on is left out, as long as the
+   * rest of the hour came back — if every slice fails, HSP itself is down. */
   const fetchHour = async (hour: number, span: number): Promise<HourCounts> => {
     const parts: HspService[] = [];
+    const broken: string[] = [];
+    let lastError: unknown;
     for (let start = 0; start < 60; start += span) {
       const end = Math.min(60, start + span) - 1;
-      parts.push(
-        ...(await fetchWindow(
-          from,
-          to,
-          range,
-          `${pad(hour)}${pad(start)}`,
-          `${pad(hour)}${pad(end)}`,
-          timeoutMs
-        ))
-      );
+      const window = `${pad(hour)}${pad(start)}-${pad(hour)}${pad(end)}`;
+      try {
+        parts.push(
+          ...(await fetchWindow(
+            from,
+            to,
+            range,
+            `${pad(hour)}${pad(start)}`,
+            `${pad(hour)}${pad(end)}`,
+            timeoutMs
+          ))
+        );
+      } catch (e) {
+        if (!(e instanceof HspServerError) || span > MIN_SPAN_MINUTES) throw e;
+        broken.push(window);
+        lastError = e;
+      }
     }
+    if (broken.length * span >= 60) throw lastError;
+    skipped.push(...broken);
     return bucketByHour(parts, [hour])[0];
   };
   const fetchHourAdaptive = async (hour: number): Promise<HourCounts> => {
@@ -319,8 +337,8 @@ export async function fetchHspHours(
       try {
         return await fetchHour(hour, span);
       } catch (e) {
-        if (!(e instanceof HspTimeoutError)) throw e;
-        timedOut = true;
+        if (e instanceof HspTimeoutError) timedOut = true;
+        else if (!(e instanceof HspServerError)) throw e;
         if (span <= MIN_SPAN_MINUTES || expired()) throw e;
       }
     }
@@ -380,16 +398,17 @@ export async function fetchHspHours(
         );
         await land(bucketByHour(services, chunk));
       } catch (e) {
-        if (!(e instanceof HspTimeoutError)) throw e;
-        // Denser than expected: retry this stretch in smaller chunks.
-        timedOut = true;
+        // Denser than expected, or HSP crashed on something in it: retry this
+        // stretch in smaller chunks.
+        if (e instanceof HspTimeoutError) timedOut = true;
+        else if (!(e instanceof HspServerError)) throw e;
         maxLen = Math.ceil(chunk.length / 2);
         continue;
       }
     }
     i = j;
   }
-  return { rows: out, complete: true, timedOut };
+  return { rows: out, complete: true, timedOut, skipped };
 }
 
 /** Map HSP TOC codes to operator names, in the order given, unknowns dropped. */

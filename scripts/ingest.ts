@@ -240,6 +240,12 @@ async function runTask(t: Task): Promise<void> {
       `  ${t.from}-${t.to} ${t.period}: ${landed}/${hours.length} hours in ` +
         `${Math.round((Date.now() - began) / 1000)}s${res.complete ? "" : " (out of time)"}`
     );
+    if (res.skipped.length) {
+      console.log(
+        `::warning::${t.from}-${t.to} ${t.period}: HSP errors on ${res.skipped.join(", ")} — ` +
+          `stored those hours without them.`
+      );
+    }
   } catch (e) {
     stats.failed++;
     if (landed === 0) consecutiveFailures++;
