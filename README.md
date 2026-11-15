@@ -102,9 +102,10 @@ Each run works in this order:
    just-ended months, stalest first.
 4. **Fill** — curated routes still missing months, newest six months first (so
    a route reaches the leaderboard sooner), then the older six.
-5. **Backfill** — hours stored before `journey_mins` existed (fetched before
-   5 October 2026), fetched again so they have a journey time. Only uses time
-   the steps above leave over.
+5. **Detail backfill** — hours stored before the finer delay buckets and
+   per-service rows existed (November 2026), fetched again newest month first
+   so they have them (and a journey time). Only uses time the steps above
+   leave over. The run summary prints how much of the history has detail.
 
 A month that has ended is fetched once more after its last day so it can be
 marked `final`, even if the last fetch already ran to its final date (HSP is
@@ -187,6 +188,31 @@ leaves fewer samples for those hours.
 stations within 400 m of one, matched to CRS codes by name. Rebuild it when
 TfL opens or renames a station.
 
+### What each fetch stores
+
+One HSP call per window returns every service in it with a bucket per
+punctuality threshold. The ingest asks for 1, 5, 10, 15, 30 and 60 minutes
+(free: HSP charges per service, not per threshold) and keeps three things:
+
+- **`hourly_metrics`** — counts per route, month and departure hour. The
+  1/10/15/60 columns are NULL on hours stored before November 2026 until the
+  detail backfill reaches them.
+- **`service_metrics`** — the same counts per timetabled train (scheduled
+  departure, arrival, operator), replaced whenever its hour is refetched.
+  Drives "train by train" on the route page.
+- **`day_metrics`** — when a month-to-date hour is refreshed, what it gained
+  since the previous snapshot is the trains of the days in between. Spans of
+  up to a week are kept; a route refreshed daily gives single days. Drives
+  "latest day" on route pages and the network line on the homepage.
+
+Average delay switches to the finer buckets automatically: once detail
+coverage reaches 99% (`FINE_DELAY_COVERAGE` in `lib/score.ts`), the ingest
+sets `fine_delay` = `on` in the `app_settings` table and the site picks it up
+within an hour. Until then it stays on the two-bucket estimate, so scores
+don't shift route by route as they are refetched and the leaderboard never
+ranks on two formulas at once. `FINE_DELAY=on|off` in the environment
+overrides the database.
+
 ### Live-data approximations (worth knowing)
 
 HSP's `serviceMetrics` returns punctuality tolerance buckets only — no
@@ -194,7 +220,8 @@ cancellation counts, no exact lateness minutes. So in live mode:
 
 - **Reliability** ≈ % of trains within 30 minutes.
 - **Average delay** is estimated from bucket midpoints (5–30 min late ≈ 12
-  min, 30+ min ≈ 40 min).
+  min, 30+ min ≈ 40 min; once `fine_delay` is on, 7.5 / 12.5 / 22 / 44 / 75
+  across the finer buckets, cancellations in the last).
 - Only **weekday** services are counted.
 
 - **Time between trains** is band length ÷ trains per weekday, so it is an

@@ -8,6 +8,17 @@ import { MetricBar } from "@/components/MetricBar";
 import { CopyLinkButton } from "@/components/CopyLinkButton";
 import { NoServiceCard } from "@/components/NoServiceCard";
 import { RouteFilling, RouteWarming } from "@/components/RouteWarming";
+import { HourStrip } from "@/components/HourStrip";
+import { ServiceTable } from "@/components/ServiceTable";
+import { DelayCost } from "@/components/DelayCost";
+import { PinCommuteButton } from "@/components/PinCommuteButton";
+import { getRouteDetail } from "@/lib/detail";
+import { operatorSlug } from "@/lib/operators";
+import { MonthNotes } from "@/components/MonthNotes";
+import { FollowLinks } from "@/components/FollowLinks";
+import { PulseBanner } from "@/components/PulseBanner";
+import { getRoutePulse } from "@/lib/pulse";
+import { getNetworkContext, monthNotes } from "@/lib/context";
 import {
   getCachedRouteScore,
   parseRouteSlug,
@@ -62,6 +73,11 @@ export async function generateMetadata(props: Props): Promise<Metadata> {
     return {
       title: `${r.from.name} → ${r.to.name} (${BAND_LABELS[r.band]}) scores ${r.result.score}/100`,
       description: r.result.verdict,
+      alternates: {
+        types: {
+          "application/rss+xml": `/feeds/${routeSlug(r.from.crs, r.to.crs, r.band)}/rss.xml`,
+        },
+      },
     };
   }
   return { title: `${r.from.name} → ${r.to.name} (${BAND_LABELS[r.band]})` };
@@ -110,6 +126,14 @@ export default async function RoutePage(props: Props) {
   const slug = routeSlug(result.from.crs, result.to.crs, result.band);
   const shareUrl = `/score/${slug}`;
   // What delays add to the timetable for an average train, in whole minutes.
+  const [detail, networkContext, pulse] = await Promise.all([
+    getRouteDetail(result.from.crs, result.to.crs, result.band),
+    getNetworkContext().catch(() => null),
+    getRoutePulse(result.from.crs, result.to.crs, result.band, result.onTimePct),
+  ]);
+  const notes = monthNotes(result.monthly, result.operators, result.band, networkContext);
+  // Minutes of delay on an average journey, on-time trains included.
+  const delayPerJourney = ((100 - result.onTimePct) / 100) * result.avgDelayMins;
   const delayMins =
     result.expectedMins !== undefined && result.journeyMins !== undefined
       ? result.expectedMins - result.journeyMins
@@ -158,6 +182,14 @@ export default async function RoutePage(props: Props) {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <CopyLinkButton path={shareUrl} />
+          <PinCommuteButton
+            from={result.from.crs}
+            to={result.to.crs}
+            band={result.band}
+            fromName={result.from.name}
+            toName={result.to.name}
+            score={result.score}
+          />
           <Link
             href={`/compare?a=${slug}`}
             className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700 transition-colors"
@@ -281,6 +313,32 @@ export default async function RoutePage(props: Props) {
         </div>
       </div>
 
+      {pulse && (
+        <div className="rise-in-delay-1 mt-4">
+          <PulseBanner pulse={pulse} scope="Latest day" />
+        </div>
+      )}
+
+      {/* Which train to catch */}
+      {detail && detail.hours.length >= 3 && (
+        <section className="rise-in-delay-2 mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <h2 className="mb-4 text-sm font-semibold uppercase tracking-wider text-slate-400">
+            Which train should you catch?
+          </h2>
+          <HourStrip hours={detail.hours} band={result.band} />
+          <h3 className="mt-6 mb-3 text-sm font-semibold text-slate-900">
+            Train by train, {BAND_LABELS[result.band]}
+          </h3>
+          <ServiceTable
+            services={detail.services}
+            months={detail.serviceMonths}
+            missingHours={detail.bandHoursWithTrains.filter(
+              (h) => !detail.serviceHours.includes(h)
+            )}
+          />
+        </section>
+      )}
+
       {/* Metric breakdown */}
       <section className="rise-in-delay-2 mt-6">
         <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3">
@@ -307,8 +365,8 @@ export default async function RoutePage(props: Props) {
             label="Delay severity"
             weight="15%"
             value={result.breakdown.delayScore}
-            displayValue={`${result.avgDelayMins}m`}
-            detail="How late the late trains are, on average"
+            displayValue={`~${Math.round(result.avgDelayMins)}m`}
+            detail="Roughly how late the late trains are: an estimate from delay bands, not exact minutes"
             color="#f59e0b"
           />
           <MetricBar
@@ -328,6 +386,22 @@ export default async function RoutePage(props: Props) {
           Score over {period}
         </h2>
         <TrendChart scores={result.monthlyScores} />
+        <MonthNotes notes={notes} />
+        <div className="mt-4 border-t border-slate-100 pt-4">
+          <FollowLinks slug={slug} />
+        </div>
+      </section>
+
+      {/* What delays cost */}
+      <section className="rise-in-delay-3 mt-6">
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3">
+          What delays cost you
+        </h2>
+        <DelayCost
+          delayPerJourneyMins={delayPerJourney}
+          lateness={detail?.lateness ?? null}
+          over30Pct={Math.max(0, 100 - result.reliabilityPct)}
+        />
       </section>
 
       {/* Route context */}
@@ -337,7 +411,17 @@ export default async function RoutePage(props: Props) {
             Operated by
           </p>
           <p className="mt-1 text-sm font-semibold text-slate-900">
-            {result.operators.join(" · ")}
+            {result.operators.map((name, i) => (
+              <span key={name}>
+                {i > 0 && " · "}
+                <Link
+                  href={`/operator/${operatorSlug(name)}`}
+                  className="hover:text-emerald-700 transition-colors"
+                >
+                  {name}
+                </Link>
+              </span>
+            ))}
           </p>
         </div>
         <div className="rounded-xl border border-slate-200 bg-white p-4">

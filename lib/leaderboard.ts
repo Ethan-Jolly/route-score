@@ -25,6 +25,7 @@ import {
 import { dbConfigured, ensureSchema, getRouteAggregates } from "./db";
 import { currentMonth, weekdaysBetween } from "./periods";
 import { hspConfigured } from "./hsp";
+import { fineDelayEnabled } from "./fineDelay";
 import { demoMonthlyMetrics } from "./demo";
 import { CURATED_ROUTES, isLondonRoute } from "./routes";
 import { stationByCrs } from "./stations";
@@ -176,16 +177,15 @@ export async function getLeaderboard(size = 10): Promise<Leaderboard> {
     return assemble(demoAggregates(), "demo", size);
   }
   await ensureSchema();
-  const totals = await getRouteAggregates(
-    PEAK_HOURS,
-    [...last12Months(), currentMonth()],
-    MIN_MONTHS
-  );
+  const [totals, fine] = await Promise.all([
+    getRouteAggregates(PEAK_HOURS, [...last12Months(), currentMonth()], MIN_MONTHS),
+    fineDelayEnabled(),
+  ]);
   const aggregates = totals.map((t) => ({
     from: t.from,
     to: t.to,
     band: LEADERBOARD_BAND,
-    ...metricsFromCounts(t.trains, t.within5, t.within30),
+    ...metricsFromCounts(t.trains, t.within5, t.within30, fine ? t.fine : null),
     gapMins: gapBetweenTrains(
       t.trains,
       t.spans.reduce((s, p) => s + weekdaysBetween(`${p.period}-01`, p.through), 0),

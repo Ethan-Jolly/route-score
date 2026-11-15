@@ -14,6 +14,7 @@
 
 import { demoJourneyMins, demoMonthlyMetrics, demoOperators } from "./demo";
 import { fetchHspHours, hspConfigured, tocNamesFor } from "./hsp";
+import { fineDelayEnabled } from "./fineDelay";
 import {
   dbConfigured,
   ensureSchema,
@@ -36,6 +37,7 @@ import {
   monthlyScores,
   trendFor,
   verdictFor,
+  type FineCounts,
 } from "./score";
 import { currentMonth, periodRange, weekdaysBetween } from "./periods";
 import { CURATED_ROUTES } from "./routes";
@@ -92,7 +94,7 @@ const PROVISIONAL_MONTHS = 3;
 
 /** The periods a score is built from: 12 complete months, then the month in
  * progress once it has at least one day HSP could know about. */
-function scoreWindow(): { closed: string[]; periods: string[] } {
+export function scoreWindow(): { closed: string[]; periods: string[] } {
   const closed = last12Months();
   const current = currentMonth();
   return {
@@ -125,11 +127,26 @@ async function loadRoute(
   band: TimeBand
 ): Promise<RouteState> {
   const { periods } = scoreWindow();
-  return buildState(await getHourRows(from.crs, to.crs, periods), band);
+  const [rows, fine] = await Promise.all([
+    getHourRows(from.crs, to.crs, periods),
+    fineDelayEnabled(),
+  ]);
+  return buildState(rows, band, fine);
 }
 
-/** What one route's stored hours amount to for a band. */
-function buildState(storedRows: HourRow[], band: TimeBand): RouteState {
+/** The finer buckets summed over some hours, or null unless all have them. */
+export function fineCounts(rows: HourRow[]): FineCounts | null {
+  if (rows.length === 0 || rows.some((r) => r.within15 === null)) return null;
+  return {
+    within10: rows.reduce((s, r) => s + (r.within10 ?? 0), 0),
+    within15: rows.reduce((s, r) => s + (r.within15 ?? 0), 0),
+    within60: rows.reduce((s, r) => s + (r.within60 ?? 0), 0),
+  };
+}
+
+/** What one route's stored hours amount to for a band. `fine`: use the finer
+ * buckets for average delay where a month has them (see fineDelayEnabled). */
+function buildState(storedRows: HourRow[], band: TimeBand, fine: boolean): RouteState {
   const { closed, periods } = scoreWindow();
   const hours = BAND_HOURS[band];
   const current = currentMonth();
@@ -163,7 +180,8 @@ function buildState(storedRows: HourRow[], band: TimeBand): RouteState {
       ...metricsFromCounts(
         trains,
         rows.reduce((s, r) => s + r.within5, 0),
-        rows.reduce((s, r) => s + r.within30, 0)
+        rows.reduce((s, r) => s + r.within30, 0),
+        fine ? fineCounts(rows) : null
       ),
       gapMins: gapBetweenTrains(
         trains,
@@ -407,6 +425,7 @@ export async function getStationRoutes(
     try {
       await ensureSchema();
       const { periods } = scoreWindow();
+      const fine = await fineDelayEnabled();
       const byRoute = new Map<string, HourRow[]>();
       for (const row of await getStationHourRows(station.crs, periods, BAND_HOURS[band])) {
         const key = `${row.from}>${row.to}`;
@@ -417,7 +436,7 @@ export async function getStationRoutes(
         const [from, to] = key.split(">");
         const pair = resolveStations(from, to);
         if (!pair) continue;
-        outcomes.push(assembleState(pair.from, pair.to, band, buildState(rows, band)));
+        outcomes.push(assembleState(pair.from, pair.to, band, buildState(rows, band, fine)));
       }
     } catch {
       // Same as a route page: a transient DB failure shows as "nothing stored".

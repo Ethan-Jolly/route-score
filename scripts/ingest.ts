@@ -24,14 +24,16 @@
 //   3. Refresh — leaderboard routes' month-to-date and just-ended months.
 //   4. Fill — curated routes still missing months (newest six months first,
 //      so a route reaches the leaderboard sooner, then the older six).
-//   5. Backfill — hours stored before journey times were, fetched again so
-//      they have one. Only ever uses time the steps above didn't need.
+//   5. Detail backfill — hours stored before the finer punctuality buckets
+//      (1/10/15/60 min) and per-service rows were collected, fetched again so
+//      they have them (and a journey time). Newest month first. Only ever
+//      uses time the steps above didn't need.
 // While there is still curated filling to do, steps 2 and 3 are each capped
 // at a share of the run so they can't starve it.
 
 import { appendFileSync } from "node:fs";
 import { CURATED_ROUTES } from "../lib/routes.ts";
-import { BAND_HOURS, STORED_HOURS, last12Months } from "../lib/score.ts";
+import { BAND_HOURS, FINE_DELAY_COVERAGE, STORED_HOURS, last12Months } from "../lib/score.ts";
 import { currentMonth, periodRange, yesterday, type PeriodRange } from "../lib/periods.ts";
 import { fetchHspHours, hspConfigured } from "../lib/hsp.ts";
 import {
@@ -40,8 +42,11 @@ import {
   getCoverage,
   getHourRows,
   getPopularRoutes,
+  getDetailCoverage,
   getServiceHint,
-  getUntimedHours,
+  getSetting,
+  setSetting,
+  getUndetailedHours,
   upsertHourRows,
 } from "../lib/db.ts";
 
@@ -191,17 +196,12 @@ function planFill(months: string[]): Task[] {
   return tasks;
 }
 
-/** When hourly_metrics.journey_mins was added (f23133f); hours fetched before
- * then have counts but no journey time. */
-const JOURNEY_MINS_ADDED = "2026-10-05T00:00:00Z";
-
-/** 5. Backfill: hours of finished months stored before journey times were,
- * fetched again so every month counts towards the expected journey time. */
+/** 5. Detail backfill: hours stored before the finer buckets and per-service
+ * rows existed, newest month first. Fetching any hour now stores everything,
+ * so this also covers hours that predate journey times. */
 async function planBackfill(): Promise<Task[]> {
   if (ONLY) return [];
-  return (await getUntimedHours(closed, JOURNEY_MINS_ADDED))
-    .map((r) => ({ ...r, tag: "journey" }))
-    .sort((a, b) => b.period.localeCompare(a.period));
+  return (await getUndetailedHours(periods)).map((r) => ({ ...r, tag: "detail" }));
 }
 
 const lookups = await planLookups();
@@ -218,7 +218,7 @@ console.log(
   `Plan: ${lookups.band.length} looked-up (requested bands), ` +
     `${lookups.rest.length} looked-up (other bands), ${refresh.length} refresh, ` +
     `${fillRecent.length} fill (recent 6 months), ${fillOlder.length} fill (older 6 months), ` +
-    `${backfill.length} journey-time backfill route-months`
+    `${backfill.length} detail backfill route-months`
 );
 if (DRY_RUN) process.exit(0);
 
@@ -303,7 +303,7 @@ await runPhase("Fill (recent 6 months)", fillRecent, endAt);
 await runPhase("Fill (older 6 months)", fillOlder, endAt);
 await runPhase("Looked-up routes (other bands, remaining)", lookups.rest, endAt);
 await runPhase("Refresh (remaining)", refresh, endAt);
-await runPhase("Backfill journey times", backfill, endAt);
+await runPhase("Detail backfill", backfill, endAt);
 
 // ---- Report ----------------------------------------------------------------
 
@@ -317,13 +317,33 @@ for (const r of curated) {
   if (n === closed.length) complete++;
 }
 
+const detail = await getDetailCoverage(periods);
 const minutes = ((Date.now() - startedAt) / 60_000).toFixed(1);
 const lines = [
   `Ran ${minutes} min: ${stats.completed} route-months completed, ${stats.failed} failed, ` +
     `${stats.hours} hours stored (${stats.trains.toLocaleString("en-GB")} trains).`,
   `Curated routes: ${qualified}/${curated.length} have ${LEADERBOARD_MONTHS}+ months ` +
     `(leaderboard-ready), ${complete}/${curated.length} have all 12.`,
+  `Detail (1/10/15/60-minute buckets and per-service rows): ` +
+    `${detail.detailed}/${detail.total} stored hours ` +
+    `(${detail.total ? Math.round((100 * detail.detailed) / detail.total) : 0}%).`,
 ];
+// Once the detail backfill is nearly done, switch average delay to the finer
+// buckets (the site reads this from app_settings, within an hour). Latched:
+// coverage only grows, and a later dip shouldn't flip the formula back.
+const detailShare = detail.total ? detail.detailed / detail.total : 0;
+if ((await getSetting("fine_delay")) === "on") {
+  lines.push("Average delay uses the finer buckets (fine_delay is on).");
+} else if (!DRY_RUN && detail.total > 0 && detailShare >= FINE_DELAY_COVERAGE) {
+  await setSetting("fine_delay", "on");
+  lines.push(
+    `Detail coverage reached ${Math.round(FINE_DELAY_COVERAGE * 100)}%: switched average delay to the finer buckets (fine_delay = on).`
+  );
+} else {
+  lines.push(
+    `Average delay switches to the finer buckets at ${Math.round(FINE_DELAY_COVERAGE * 100)}% detail coverage.`
+  );
+}
 if (aborted) {
   lines.push(
     `Stopped early: ${MAX_CONSECUTIVE_FAILURES} tasks in a row failed — HSP is unavailable or rate-limiting this account.`
