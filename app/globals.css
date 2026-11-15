@@ -106,3 +106,9 @@ body {
     animation: none;
   }
 }
+
+/* Commuter map: a quiet basemap so the score dots stand out. */
+.commuter-map .leaflet-tile-pane {
+  filter: grayscale(1) brightness(1.06) contrast(0.85);
+  opacity: 0.85;
+}

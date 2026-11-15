@@ -9,3 +9,6 @@ next-env.d.ts
 
 # Claude Code personal settings (permission allowlist, machine-specific)
 .claude/settings.local.json
+
+# Playwright MCP screenshots and logs
+.playwright-mcp/

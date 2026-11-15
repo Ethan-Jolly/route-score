@@ -49,6 +49,18 @@ export default function RootLayout({
                 Connections
               </Link>
               <Link
+                href="/map"
+                className="hidden md:block hover:text-emerald-600 transition-colors"
+              >
+                Map
+              </Link>
+              <Link
+                href="/operators"
+                className="hidden sm:block hover:text-emerald-600 transition-colors"
+              >
+                Operators
+              </Link>
+              <Link
                 href="/leaderboard"
                 className="hover:text-emerald-600 transition-colors"
               >

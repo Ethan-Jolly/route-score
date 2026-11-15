@@ -45,24 +45,69 @@ export function gapBetweenTrains(
   return round1((bandHours * 60 * Math.max(1, weekdays)) / trains);
 }
 
+/** The finer punctuality buckets, when every hour summed into a figure has
+ * them (hours stored before November 2026 don't, until backfilled). */
+export interface FineCounts {
+  within10: number;
+  within15: number;
+  within60: number;
+}
+
+/**
+ * Average delay switches to the finer buckets once the ingest's detail
+ * backfill has covered this share of stored hours. Switching on part-way
+ * would move routes by a few points one by one as they are refetched, and
+ * rank half the leaderboard on one formula and half on the other. The ingest
+ * checks after each run and, once reached, sets `fine_delay` = `on` in
+ * app_settings; the site reads it through `fineDelayEnabled()`
+ * (lib/fineDelay.ts). Callers pass `fine` to `metricsFromCounts` only then.
+ */
+export const FINE_DELAY_COVERAGE = 0.99;
+
 /**
  * Percentages from raw punctuality counts. HSP gives tolerance buckets only,
  * so reliability ≈ % within 30 min and average delay is estimated from bucket
- * midpoints (5–30 min late ≈ 12 min, 30+ min ≈ 40 min).
+ * midpoints: with only 5 and 30, 5–30 min late ≈ 12 min and 30+ ≈ 40 min;
+ * with the finer buckets, 5–10 ≈ 7.5, 10–15 ≈ 12.5, 15–30 ≈ 22, 30–60 ≈ 44
+ * and 60+ (which includes cancellations) ≈ 75.
  */
 export function metricsFromCounts(
   trains: number,
   within5: number,
-  within30: number
+  within30: number,
+  fine?: FineCounts | null
 ): { onTimePct: number; reliabilityPct: number; avgDelayMins: number } {
   if (trains <= 0) return { onTimePct: 0, reliabilityPct: 0, avgDelayMins: 0 };
-  const late5to30 = Math.max(0, within30 - within5);
-  const over30 = Math.max(0, trains - within30);
-  const late = late5to30 + over30;
+  const late = Math.max(0, trains - within5);
+  let delayMins: number;
+  if (fine) {
+    const b = latenessBuckets(trains, within5, within30, fine);
+    delayMins =
+      b.late5to10 * 7.5 + b.late10to15 * 12.5 + b.late15to30 * 22 + b.late30to60 * 44 + b.late60 * 75;
+  } else {
+    delayMins = Math.max(0, within30 - within5) * 12 + Math.max(0, trains - within30) * 40;
+  }
   return {
     onTimePct: round1((within5 / trains) * 100),
     reliabilityPct: round1((within30 / trains) * 100),
-    avgDelayMins: late > 0 ? round1((late5to30 * 12 + over30 * 40) / late) : 0,
+    avgDelayMins: late > 0 ? round1(delayMins / late) : 0,
+  };
+}
+
+/** Trains in each lateness band, from cumulative "within" counts. */
+export function latenessBuckets(
+  trains: number,
+  within5: number,
+  within30: number,
+  fine: FineCounts
+) {
+  const gap = (hi: number, lo: number) => Math.max(0, hi - lo);
+  return {
+    late5to10: gap(fine.within10, within5),
+    late10to15: gap(fine.within15, fine.within10),
+    late15to30: gap(within30, fine.within15),
+    late30to60: gap(fine.within60, within30),
+    late60: gap(trains, fine.within60),
   };
 }
 

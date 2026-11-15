@@ -23,12 +23,42 @@
 
 const HSP_BASE = "https://hsp-prod.rockshore.net/api/v1";
 
+/** The punctuality thresholds asked for, in minutes. One call returns a bucket
+ * for each at no extra cost: HSP charges per service, not per number. */
+export const TOLERANCES = [1, 5, 10, 15, 30, 60] as const;
+
+/** Trains arriving within each threshold. The 1/10/15/60-minute ones are null
+ * on hours stored before they were collected (November 2026). */
+export interface Buckets {
+  within1: number | null;
+  within5: number;
+  within10: number | null;
+  within15: number | null;
+  within30: number;
+  within60: number | null;
+}
+
+/** One timetabled service's performance over a date range. */
+export interface ServiceCounts {
+  /** Scheduled departure from the origin, "HHMM". */
+  dep: string;
+  /** Scheduled arrival at the destination, "HHMM" ("" if unknown). */
+  arr: string;
+  toc: string;
+  /** Runs of this service in the range. */
+  trains: number;
+  within1: number;
+  within5: number;
+  within10: number;
+  within15: number;
+  within30: number;
+  within60: number;
+}
+
 /** Raw performance for one departure hour of a route over a date range. */
-export interface HourCounts {
+export interface HourCounts extends Buckets {
   hour: number;
   trains: number;
-  within5: number;
-  within30: number;
   /** Distinct timetabled services seen — the cost driver, used to size calls. */
   services: number;
   tocCodes: string[];
@@ -36,6 +66,9 @@ export interface HourCounts {
    * journeyMins / trains. Null when not known: hours stored before this was
    * collected, or no service carried usable times. */
   journeyMins: number | null;
+  /** The services behind these counts, when they came from HSP just now
+   * (absent on rows read back from the database). */
+  serviceList?: ServiceCounts[];
 }
 
 interface HspMetric {
@@ -171,7 +204,7 @@ async function fetchWindow(
       from_date: range.from,
       to_date: range.to,
       days: "WEEKDAY",
-      tolerance: ["5", "30"],
+      tolerance: TOLERANCES.map(String),
     },
     timeoutMs
   );
@@ -192,26 +225,46 @@ function scheduledMins(ptd: string, pta: string): number | null {
   return d > 0 ? d : null;
 }
 
+/** A service's counts per tolerance, keyed "within<n>". */
+function serviceBuckets(svc: HspService): Omit<ServiceCounts, "dep" | "arr" | "toc" | "trains"> {
+  const out = { within1: 0, within5: 0, within10: 0, within15: 0, within30: 0, within60: 0 };
+  for (const metric of svc.Metrics ?? []) {
+    const key = `within${metric.tolerance_value}` as keyof typeof out;
+    if (key in out) out[key] += Number(metric.num_tolerance) || 0;
+  }
+  return out;
+}
+
 /** Bucket services into the given hours by scheduled departure time. Every
  * requested hour gets a row (zeros included) so "fetched, no trains" is
  * distinguishable from "not fetched". */
 function bucketByHour(services: HspService[], hours: number[]): HourCounts[] {
   const rows = new Map<
     number,
-    HourCounts & { tocs: Set<string>; timed: number; mins: number }
+    HourCounts & {
+      tocs: Set<string>;
+      timed: number;
+      mins: number;
+      byService: Map<string, ServiceCounts>;
+    }
   >();
   for (const h of hours) {
     rows.set(h, {
       hour: h,
       trains: 0,
+      within1: 0,
       within5: 0,
+      within10: 0,
+      within15: 0,
       within30: 0,
+      within60: 0,
       services: 0,
       tocCodes: [],
       journeyMins: null,
       tocs: new Set(),
       timed: 0,
       mins: 0,
+      byService: new Map(),
     });
   }
   const first = hours[0];
@@ -230,18 +283,39 @@ function bucketByHour(services: HspService[], hours: number[]): HourCounts[] {
       row.mins += matched * journey;
     }
     if (attrs.toc_code) row.tocs.add(attrs.toc_code);
-    for (const metric of svc.Metrics ?? []) {
-      const inTolerance = Number(metric.num_tolerance) || 0;
-      if (metric.tolerance_value === "5") row.within5 += inTolerance;
-      if (metric.tolerance_value === "30") row.within30 += inTolerance;
+    const b = serviceBuckets(svc);
+    row.within1! += b.within1;
+    row.within5 += b.within5;
+    row.within10! += b.within10;
+    row.within15! += b.within15;
+    row.within30 += b.within30;
+    row.within60! += b.within60;
+
+    // The same timetable slot can come back as more than one service (a
+    // pattern that changed mid-range); they are one train to a commuter.
+    const dep = /^\d{4}$/.test(attrs.gbtt_ptd ?? "") ? attrs.gbtt_ptd : "";
+    if (!dep) continue;
+    const arr = /^\d{4}$/.test(attrs.gbtt_pta ?? "") ? attrs.gbtt_pta : "";
+    const key = `${dep}|${arr}|${attrs.toc_code ?? ""}`;
+    const prev = row.byService.get(key);
+    if (prev) {
+      prev.trains += matched;
+      for (const k of Object.keys(b) as (keyof typeof b)[]) prev[k] += b[k];
+    } else {
+      row.byService.set(key, { dep, arr, toc: attrs.toc_code ?? "", trains: matched, ...b });
     }
   }
   return hours.map((h) => {
-    const { tocs, timed, mins, ...row } = rows.get(h)!;
+    const { tocs, timed, mins, byService, ...row } = rows.get(h)!;
     // Scaled up to cover any trains whose service had no usable times.
     const journeyMins =
       row.trains === 0 ? 0 : timed > 0 ? Math.round((mins * row.trains) / timed) : null;
-    return { ...row, tocCodes: [...tocs], journeyMins };
+    return {
+      ...row,
+      tocCodes: [...tocs],
+      journeyMins,
+      serviceList: [...byService.values()].filter((s) => s.trains > 0),
+    };
   });
 }
 

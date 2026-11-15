@@ -1,6 +1,9 @@
 import Link from "next/link";
 import { StationSearch } from "@/components/StationSearch";
 import { MiniScoreCard } from "@/components/MiniScoreCard";
+import { MyCommute } from "@/components/MyCommute";
+import { PulseBanner } from "@/components/PulseBanner";
+import { getNetworkPulse } from "@/lib/pulse";
 import { getCachedRouteScore } from "@/lib/provider";
 import type { RouteScoreResult, TimeBand } from "@/lib/types";
 
@@ -36,6 +39,7 @@ export default async function HomePage() {
       EXAMPLE_ROUTES.map((r) => getCachedRouteScore(r.from, r.to, r.band))
     )
   ).filter((r): r is RouteScoreResult => r !== null && r.noService === false);
+  const pulse = await getNetworkPulse("am-peak");
   const [opening, accent] = HEADLINES[Math.floor(Math.random() * HEADLINES.length)];
 
   return (
@@ -50,6 +54,8 @@ export default async function HomePage() {
         </p>
       </section>
 
+      <MyCommute />
+
       <section className="rise-in-delay-2 mx-auto max-w-2xl pb-10">
         <StationSearch />
         <p className="mt-3 text-center text-sm text-slate-500">
@@ -62,6 +68,12 @@ export default async function HomePage() {
           </Link>
         </p>
       </section>
+
+      {pulse && (
+        <section className="rise-in-delay-3 pb-6">
+          <PulseBanner pulse={pulse} scope="Morning peak across the network" />
+        </section>
+      )}
 
       {examples.length > 0 && (
         <section className="rise-in-delay-3 pb-8">
@@ -78,6 +90,29 @@ export default async function HomePage() {
           </div>
         </section>
       )}
+
+      <section className="pb-3">
+        <Link
+          href="/map"
+          className="group flex items-center justify-between gap-4 rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 to-white px-6 py-5 shadow-sm hover:shadow-md transition-all"
+        >
+          <span>
+            <span className="block text-lg font-semibold text-slate-900">
+              Moving? Find a reliable commute
+            </span>
+            <span className="mt-0.5 block text-sm text-slate-500">
+              Every town with a direct train to where you work, on a map,
+              coloured by how reliable the trains are.
+            </span>
+          </span>
+          <span
+            className="text-2xl text-emerald-400 group-hover:text-emerald-600 group-hover:translate-x-0.5 transition-all"
+            aria-hidden
+          >
+            →
+          </span>
+        </Link>
+      </section>
 
       <section className="pb-10">
         <Link
