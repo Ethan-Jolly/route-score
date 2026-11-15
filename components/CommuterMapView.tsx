@@ -170,7 +170,7 @@ export function CommuterMapView({
       ) : (
         <ol className="grid gap-2 sm:grid-cols-2">
           {shown.slice(0, 30).map((p, i) => (
-            <li key={p.crs}>
+            <li key={p.crs} className="min-w-0">
               <Link
                 href={p.href}
                 prefetch={false}

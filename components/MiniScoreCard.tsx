@@ -9,7 +9,7 @@ export function MiniScoreCard({ result }: { result: RouteScoreResult }) {
   return (
     <Link
       href={`/route/${result.from.crs}-${result.to.crs}?band=${result.band}`}
-      className="group rounded-xl border border-slate-200 bg-white p-4 shadow-sm hover:shadow-md hover:border-slate-300 transition-all flex items-center gap-4"
+      className="group rounded-xl border border-slate-200 bg-white p-4 shadow-sm hover:shadow-md hover:border-slate-300 transition-all flex min-w-0 items-center gap-3 sm:gap-4"
       prefetch={false}
     >
       <span
@@ -22,7 +22,7 @@ export function MiniScoreCard({ result }: { result: RouteScoreResult }) {
         <span className="block truncate text-sm font-semibold text-slate-900">
           {result.from.name} → {result.to.name}
         </span>
-        <span className="mt-0.5 flex items-center gap-2 text-xs text-slate-400">
+        <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-400">
           {BAND_LABELS[result.band]}
           <TrendBadge trend={result.trend} />
         </span>

@@ -6,14 +6,16 @@ name: Route Score ingest
 # every chunk is stored as it lands and each run re-plans from what's stored.
 #
 # The repo is public, so Actions minutes are free and the real ceiling is HSP
-# itself (~4 concurrent calls per account). Four 5-hour runs a day keep it
-# busy about 20 hours in 24; a run ends early when there is nothing left to do.
-# If the repo is ever made private again, cut this back to one 50-minute run a
-# day (a private repo gets 2,000 free minutes a month).
+# itself (~4 concurrent calls per account). If the repo is ever made private
+# again, cut this back to one 50-minute run a day and drop the chaining (a
+# private repo gets 2,000 free minutes a month).
 #
-# In practice GitHub starts only 2–3 of the 4 scheduled runs a day (about
-# 10 hours of ingest). Since the first fill finished that's enough to keep
-# every route's month-to-date within a day or two.
+# Each run ingests for 5.5 hours and, if it ran out of time with work still
+# queued, starts the next run itself — the same chain as the Tube status
+# collector — so a backlog (the detail backfill, new routes) is worked through
+# around the clock. Scheduled runs alone only got ~10 hours a day: GitHub
+# starts just 2–3 of the 4. When a run finishes early there is nothing left,
+# so the chain stops and the 6-hourly schedule takes over again.
 #
 # GitHub disables scheduled workflows in a public repo after 60 days with no
 # repository activity; the "Keep schedules enabled" step resets that clock.
@@ -25,11 +27,11 @@ on:
     inputs:
       minutes:
         description: "How long to ingest for"
-        default: "300"
+        default: "330"
 
 permissions:
   contents: read
-  actions: write # keep both schedules enabled
+  actions: write # start the next run, and keep both schedules enabled
 
 # Never run two ingests at once — they'd fight over HSP's ~4-call limit. A run
 # that is still going when the next is due makes the next one wait.
@@ -41,6 +43,8 @@ jobs:
   ingest:
     runs-on: ubuntu-latest
     timeout-minutes: 350
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -50,20 +54,26 @@ jobs:
       - run: npm ci
       - name: Keep schedules enabled
         continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           for wf in ingest.yml tfl-status.yml; do
             gh api -X PUT "repos/${{ github.repository }}/actions/workflows/$wf/enable"
           done
       - name: Ingest
+        id: ingest
         env:
           # Set in repo Settings → Secrets and variables → Actions.
           HSP_EMAIL: ${{ secrets.HSP_EMAIL }}
           HSP_PASSWORD: ${{ secrets.HSP_PASSWORD }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          # 2 of HSP's ~4 concurrent calls; the live site keeps the other 2 for
-          # visitors warming a new route.
-          HSP_CONCURRENCY: "2"
-          MINUTES: ${{ inputs.minutes || '300' }}
+          # 3 of HSP's ~4 concurrent calls; the live site keeps the last one
+          # for visitors warming a new route. Drop back to 2 if runs start
+          # stopping early on HSP failures.
+          HSP_CONCURRENCY: "3"
+          MINUTES: ${{ inputs.minutes || '330' }}
         run: node scripts/ingest.ts --minutes="$MINUTES"
+      # Only after a successful run that ran out of time with work left: a
+      # broken run (bad secret, HSP down) mustn't loop, so failures wait for
+      # the schedule instead.
+      - name: Start the next run
+        if: steps.ingest.outputs.more == 'true'
+        run: gh workflow run ingest.yml --repo "${{ github.repository }}" --ref "${{ github.ref_name }}"

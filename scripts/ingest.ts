@@ -24,14 +24,18 @@
 //   3. Refresh — leaderboard routes' month-to-date and just-ended months.
 //   4. Fill — curated routes still missing months (newest six months first,
 //      so a route reaches the leaderboard sooner, then the older six).
-//   5. Detail backfill — hours stored before the finer punctuality buckets
+//   5. Coverage — one route per station the curated list doesn't reach
+//      (lib/data/coverage-routes.json, from the timetable), so every station
+//      has a score: filled newest six months first, kept fresh, then the
+//      older six. Quiet routes, so cheap: about one HSP call per month.
+//   6. Detail backfill — hours stored before the finer punctuality buckets
 //      (1/10/15/60 min) and per-service rows were collected, fetched again so
 //      they have them (and a journey time). Newest month first. Only ever
 //      uses time the steps above didn't need.
 // While there is still curated filling to do, steps 2 and 3 are each capped
 // at a share of the run so they can't starve it.
 
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { CURATED_ROUTES } from "../lib/routes.ts";
 import { BAND_HOURS, FINE_DELAY_COVERAGE, STORED_HOURS, last12Months } from "../lib/score.ts";
 import { currentMonth, periodRange, yesterday, type PeriodRange } from "../lib/periods.ts";
@@ -47,6 +51,7 @@ import {
   getSetting,
   setSetting,
   getUndetailedHours,
+  pruneDayMetrics,
   upsertHourRows,
 } from "../lib/db.ts";
 
@@ -82,6 +87,9 @@ interface Task {
   hours: number[] | null;
   /** Distinguishes two tasks for the same route-month (different hours). */
   tag?: string;
+  /** Station-coverage route: no day-level counts ("latest day" is for routes
+   * people follow, and a row per hour and day for every station adds up). */
+  coverage?: boolean;
 }
 
 const startedAt = Date.now();
@@ -94,6 +102,15 @@ const routeKey = (from: string, to: string) => `${from}>${to}`;
 
 await ensureSchema();
 const coverage = await getCoverage(periods, ALL_HOURS);
+/** One route per station outside the curated list, picked from the
+ * timetable by scripts/build-coverage-routes.ts. Skipped with --routes. */
+const coverageRoutes: { from: string; to: string }[] = ONLY
+  ? []
+  : (
+      JSON.parse(
+        readFileSync(new URL("../lib/data/coverage-routes.json", import.meta.url), "utf8")
+      ) as { routes: { from: string; to: string }[] }
+    ).routes;
 const curated = ONLY
   ? CURATED_ROUTES.filter((r) => ONLY.has(routeKey(r.from, r.to)))
   : CURATED_ROUTES;
@@ -156,9 +173,9 @@ async function planLookups(): Promise<{ band: Task[]; rest: Task[] }> {
 
 /** 2. Refresh: leaderboard routes whose stored months are snapshots that have
  * since moved on (month-to-date, or a month that has now ended). */
-function planRefresh(): Task[] {
+function planRefresh(routes: { from: string; to: string }[]): Task[] {
   const stale: (Task & { through: string })[] = [];
-  for (const r of curated) {
+  for (const r of routes) {
     const cov = coverage.get(routeKey(r.from, r.to));
     if (!cov) continue;
     const complete = closed.filter((p) => cov.get(p)?.hours === ALL_HOURS.length);
@@ -183,9 +200,9 @@ function planRefresh(): Task[] {
 }
 
 /** 3. Fill: curated routes still missing hours in the given months. */
-function planFill(months: string[]): Task[] {
+function planFill(routes: { from: string; to: string }[], months: string[]): Task[] {
   const tasks: Task[] = [];
-  for (const r of curated) {
+  for (const r of routes) {
     const cov = coverage.get(routeKey(r.from, r.to));
     for (const period of months) {
       const stored = cov?.get(period)?.hours ?? 0;
@@ -205,9 +222,13 @@ async function planBackfill(): Promise<Task[]> {
 }
 
 const lookups = await planLookups();
-const refresh = planRefresh();
-const fillRecent = planFill(newestFirst.slice(0, LEADERBOARD_MONTHS));
-const fillOlder = planFill(newestFirst.slice(LEADERBOARD_MONTHS));
+const refresh = planRefresh(curated);
+const fillRecent = planFill(curated, newestFirst.slice(0, LEADERBOARD_MONTHS));
+const fillOlder = planFill(curated, newestFirst.slice(LEADERBOARD_MONTHS));
+const asCoverage = (tasks: Task[]) => tasks.map((t) => ({ ...t, coverage: true, tag: `${t.tag ?? ""}cov` }));
+const coverageRecent = asCoverage(planFill(coverageRoutes, newestFirst.slice(0, LEADERBOARD_MONTHS)));
+const coverageRefresh = asCoverage(planRefresh(coverageRoutes));
+const coverageOlder = asCoverage(planFill(coverageRoutes, newestFirst.slice(LEADERBOARD_MONTHS)));
 const backfill = await planBackfill();
 
 console.log(
@@ -218,9 +239,15 @@ console.log(
   `Plan: ${lookups.band.length} looked-up (requested bands), ` +
     `${lookups.rest.length} looked-up (other bands), ${refresh.length} refresh, ` +
     `${fillRecent.length} fill (recent 6 months), ${fillOlder.length} fill (older 6 months), ` +
-    `${backfill.length} detail backfill route-months`
+    `${coverageRecent.length + coverageRefresh.length + coverageOlder.length} coverage ` +
+    `(${coverageRoutes.length} station routes), ${backfill.length} detail backfill route-months`
 );
 if (DRY_RUN) process.exit(0);
+
+/** "Latest day" looks back 60 days (lib/pulse.ts); older spans are dropped. */
+const DAY_METRICS_KEEP_DAYS = 60;
+const pruned = await pruneDayMetrics(DAY_METRICS_KEEP_DAYS);
+if (pruned) console.log(`Dropped ${pruned} day spans older than ${DAY_METRICS_KEEP_DAYS} days.`);
 
 // ---- Run -------------------------------------------------------------------
 
@@ -252,7 +279,9 @@ async function runTask(t: Task): Promise<void> {
       hint: await getServiceHint(t.from, t.to),
       deadline: endAt,
       onChunk: async (rows) => {
-        await upsertHourRows(t.from, t.to, t.period, rows, range.to, range.final);
+        await upsertHourRows(t.from, t.to, t.period, rows, range.to, range.final, {
+          dayMetrics: !t.coverage,
+        });
         landed += rows.length;
         stats.hours += rows.length;
         stats.trains += rows.reduce((s, r) => s + r.trains, 0);
@@ -303,6 +332,9 @@ await runPhase("Fill (recent 6 months)", fillRecent, endAt);
 await runPhase("Fill (older 6 months)", fillOlder, endAt);
 await runPhase("Looked-up routes (other bands, remaining)", lookups.rest, endAt);
 await runPhase("Refresh (remaining)", refresh, endAt);
+await runPhase("Coverage fill (recent 6 months)", coverageRecent, endAt);
+await runPhase("Coverage refresh", coverageRefresh, endAt);
+await runPhase("Coverage fill (older 6 months)", coverageOlder, endAt);
 await runPhase("Detail backfill", backfill, endAt);
 
 // ---- Report ----------------------------------------------------------------
@@ -317,6 +349,14 @@ for (const r of curated) {
   if (n === closed.length) complete++;
 }
 
+let stationsScored = 0;
+for (const r of coverageRoutes) {
+  const cov = after.get(routeKey(r.from, r.to));
+  if (closed.filter((p) => cov?.get(p)?.hours === ALL_HOURS.length).length >= LEADERBOARD_MONTHS) {
+    stationsScored++;
+  }
+}
+
 const detail = await getDetailCoverage(periods);
 const minutes = ((Date.now() - startedAt) / 60_000).toFixed(1);
 const lines = [
@@ -324,6 +364,12 @@ const lines = [
     `${stats.hours} hours stored (${stats.trains.toLocaleString("en-GB")} trains).`,
   `Curated routes: ${qualified}/${curated.length} have ${LEADERBOARD_MONTHS}+ months ` +
     `(leaderboard-ready), ${complete}/${curated.length} have all 12.`,
+  ...(coverageRoutes.length
+    ? [
+        `Station coverage: ${stationsScored}/${coverageRoutes.length} routes for stations outside ` +
+          `the curated list have ${LEADERBOARD_MONTHS}+ months.`,
+      ]
+    : []),
   `Detail (1/10/15/60-minute buckets and per-service rows): ` +
     `${detail.detailed}/${detail.total} stored hours ` +
     `(${detail.total ? Math.round((100 * detail.detailed) / detail.total) : 0}%).`,
@@ -354,6 +400,16 @@ if (process.env.GITHUB_STEP_SUMMARY) {
   appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### Route Score ingest\n\n${lines.join("\n\n")}\n`);
 }
 if (aborted) console.log("::warning::Ingest stopped early: HSP unavailable or rate-limiting.");
+
+// Tell the workflow whether to start the next run straight away: only when
+// this one ran out of time with work still queued. A run that finished early
+// had nothing left (the 6-hourly schedule picks up new work), and one that
+// stopped on HSP failures shouldn't loop.
+const outOfTime = Date.now() >= endAt - 60_000;
+if (process.env.GITHUB_OUTPUT) {
+  appendFileSync(process.env.GITHUB_OUTPUT, `more=${outOfTime && !aborted}
+`);
+}
 
 // A run that had work to do and stored nothing is a real failure — say so.
 if (stats.tasks > 0 && stats.hours === 0) {

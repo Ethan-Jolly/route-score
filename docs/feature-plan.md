@@ -31,7 +31,7 @@ services into hours and ask only for 5 and 30.
 |---|---|---|
 | 1.1 | Ask HSP for 1/5/10/15/30/60-minute tolerances | Done |
 | 1.2 | New `hourly_metrics` columns `within1/10/15/60` (NULL for old rows) | Done |
-| 1.3 | New `service_metrics` table: one row per route, month and scheduled service (dep time, arr time, operator, runs, the six buckets) | Done |
+| 1.3 | Per-service counts (dep time, arr time, operator, runs, the six buckets), stored packed in `service_months` (one row per route-month) | Done |
 | 1.4 | New `day_metrics` table: whenever a month-to-date hour is refreshed, the difference from the previous snapshot is the counts for the days in between. Gives day-level data for free | Done |
 | 1.5 | Ingest phase "detail backfill": refetch stored hours that lack the new buckets, newest month first, using time the other phases leave over. Replaces the journey-time backfill | Done |
 | 1.6 | `metricsFromCounts` uses the finer buckets when a month has them, so average delay stops being a two-bucket guess | Built; switches itself on at 99% detail coverage (ingest sets `fine_delay` in `app_settings`) |
@@ -41,7 +41,7 @@ services into hours and ask only for 5 and 30.
 | # | Item | Status |
 |---|---|---|
 | 2.1 | **Which train should I catch?** Hour-by-hour strip (06:00–18:59) on the route page, from `hourly_metrics` (already populated), with a "leave earlier / later" nudge | Done |
-| 2.2 | **Your train, not your route.** Per-service table for the band (07:42 → 08:39, operator, on-time %, 15+ late %), from `service_metrics` as it fills | Done |
+| 2.2 | **Your train, not your route.** Per-service table for the band (07:42 → 08:39, operator, on-time %, 15+ late %), from `service_months` as it fills | Done |
 | 2.3 | **Delay Repay estimator.** Share of trains 15–29, 30–59 and 60+ late; the visitor enters a single fare or season ticket price and gets an estimated yearly claim | Done |
 | 2.4 | **Hours lost per year.** Average delay per journey × ~225 working days, with a plain-English comparison | Done |
 | 2.5 | **Pin my commute.** `localStorage` pin on the route page; homepage shows your route first with the change since your last visit | Done |
@@ -105,7 +105,7 @@ possible once it has history.
 ## Notes and decisions
 
 - **Nothing collects until the ingest change is deployed.** The scheduled
-  ingest runs from the GitHub repo, so `service_metrics`, `day_metrics` and
+  ingest runs from the GitHub repo, so `service_months`, `day_metrics` and
   the finer buckets only start filling after these changes are pushed. As of
   15 Nov only BTN→LBG 07:00 has detail (from testing).
 - **Route features degrade gracefully meanwhile**: the hour strip works today
@@ -141,5 +141,24 @@ possible once it has history.
   2027: on 15 Nov, 169,181 of 169,182 stored hours lacked detail, and the
   ingest manages ~1,600 hours per hour of running across ~10 hours a day,
   much of which goes on refreshing month-to-date first.
+- **Faster ingest** (15 Nov): runs now chain themselves while there's a
+  backlog (about 24 hours a day instead of ~10) at 3 concurrent HSP calls
+  instead of 2. Roughly 3.5× the throughput, so the detail backfill should
+  take about 1–2 weeks. The Neon database is already awake around the clock
+  (the Tube collector writes every 2 minutes), so this adds no awake time.
+- **Station coverage** (15 Nov): every station outside the curated routes
+  gets one route from the National Rail timetable
+  (`scripts/build-coverage-routes.ts` → `lib/data/coverage-routes.json`):
+  2,232 routes; 46 stations have no direct weekday train (closed, bus-only,
+  or sub-codes of a main station). Filled at low priority before the detail
+  backfill; about 2–3 days of ingest. Skipping empty hours was dropped: the
+  ingest already batches quiet hours into one call, so it saved almost
+  nothing. A better pick of "most popular" would need ORR's origin–destination
+  passenger figures.
+- **Storage** (15 Nov): with ~3,300 routes, a row per train per month would
+  have been ~1.7M rows (~300 MB) against Neon's free 0.5 GB, so per-service
+  counts are packed one row per route-month (`service_months`, JSON by hour)
+  and `day_metrics` keeps 60 days and skips coverage routes. The old
+  `service_metrics` table (test rows only) is unused and can be dropped.
 - **Known inherited issue**: leaderboard and operator route lists rank on both
   peaks but link to the AM peak page, so the number can differ on click.

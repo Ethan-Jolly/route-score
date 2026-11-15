@@ -125,7 +125,7 @@ function BoardColumn({
   entries: LeaderboardEntry[];
 }) {
   return (
-    <section>
+    <section className="min-w-0">
       <div className="mb-3">
         <h2 className={`text-lg font-bold ${accent}`}>{title}</h2>
         <p className="text-xs text-slate-400">{subtitle}</p>

@@ -1,10 +1,20 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Analytics } from "@vercel/analytics/next";
-import { Logo } from "@/components/Logo";
+import { Inter, Inter_Tight } from "next/font/google";
+import { Logo, Wordmark } from "@/components/Logo";
 import { SearchLink } from "@/components/SearchLink";
 import { SITE_NAME, STRAPLINE } from "@/lib/site";
 import "./globals.css";
+
+// Self-hosted at build time by next/font: no request to Google from visitors.
+const inter = Inter({ subsets: ["latin"], variable: "--font-inter", display: "swap" });
+const interTight = Inter_Tight({
+  subsets: ["latin"],
+  weight: ["400", "700"],
+  variable: "--font-inter-tight",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   metadataBase: new URL(
@@ -27,16 +37,14 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en-GB">
+    <html lang="en-GB" className={`${inter.variable} ${interTight.variable}`}>
       <body className="min-h-screen flex flex-col">
         <header className="border-b border-slate-200/80 bg-white/70 backdrop-blur sticky top-0 z-20">
           <div className="mx-auto max-w-5xl px-4 py-2 flex items-center justify-between gap-4">
             <Link href="/" className="flex items-center gap-2.5">
               <Logo size={30} />
               <span className="flex flex-col leading-tight">
-                <span className="font-semibold tracking-tight text-slate-900">
-                  {SITE_NAME}
-                </span>
+                <Wordmark className="text-[17px] leading-tight" />
                 <span className="text-[11px] text-slate-500">{STRAPLINE}</span>
               </span>
             </Link>

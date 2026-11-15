@@ -5,7 +5,7 @@
  *   `hourly_metrics` (stored for every route since launch) — "which train
  *   should I catch?".
  * - **Services**: each timetabled train in the band ("the 07:42"), from
- *   `service_metrics`, which fills as hours are fetched or backfilled.
+ *   `service_months`, which fills as hours are fetched or backfilled.
  * - **Lateness**: how late the late trains are in 15/30/60-minute steps —
  *   what Delay Repay pays on — from the finer buckets, same caveat.
  *
