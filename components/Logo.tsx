@@ -1,28 +1,28 @@
-/** The site mark: a train head-on beside three rising bars. Kept in step
- * with app/icon.svg, which is the same drawing for the browser tab. */
+/** The site mark: the timetable (white) runs straight, the real train
+ * (emerald) steps down — planned vs actual. Kept in step with app/icon.svg,
+ * which is the same drawing for the browser tab. */
 export function Logo({ size = 32 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 64 64" aria-hidden>
       <rect width="64" height="64" rx="14" fill="#0f2a55" />
-      <rect x="11" y="15" width="26" height="28" rx="7" fill="#fff" />
-      <g fill="#0f2a55">
-        <rect x="18.5" y="18.2" width="11" height="2.6" rx="1.3" />
-        <rect x="14.5" y="23.5" width="19" height="10.5" rx="3" />
-        <circle cx="17.5" cy="38.3" r="2" />
-        <circle cx="30.5" cy="38.3" r="2" />
-      </g>
+      <path d="M13 22H51" stroke="#fff" strokeWidth="6" strokeLinecap="round" />
       <path
-        d="M17.5 44 11 52.5M30.5 44 37 52.5M16 47h16M12.5 51.5h23"
+        d="M13 36H28L36 45H51"
         fill="none"
-        stroke="#fff"
-        strokeWidth="3"
+        stroke="#34d399"
+        strokeWidth="6"
         strokeLinecap="round"
+        strokeLinejoin="round"
       />
-      <g fill="#34d399">
-        <rect x="41" y="34" width="4.2" height="9" rx="0.8" />
-        <rect x="46.9" y="29" width="4.2" height="14" rx="0.8" />
-        <rect x="52.8" y="24" width="4.2" height="19" rx="0.8" />
-      </g>
     </svg>
+  );
+}
+
+/** "Mind the Delay" with "the" set back, so the two words that matter lead. */
+export function Wordmark({ className = "" }: { className?: string }) {
+  return (
+    <span className={`font-display font-bold tracking-[-0.02em] text-slate-900 ${className}`}>
+      Mind <span className="font-normal text-slate-400">the</span> Delay
+    </span>
   );
 }

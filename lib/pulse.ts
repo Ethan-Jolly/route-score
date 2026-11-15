@@ -34,8 +34,8 @@ export interface Pulse {
 
 /** Days needed before "worse than X% of days" means anything. */
 const MIN_DAYS = 10;
-/** How far back to look. */
-const LOOKBACK_DAYS = 90;
+/** How far back to look. The ingest keeps 60 days of day spans. */
+const LOOKBACK_DAYS = 60;
 
 const fmt = (d: string, opts: Intl.DateTimeFormatOptions) =>
   new Date(`${d}T12:00:00Z`).toLocaleDateString("en-GB", { ...opts, timeZone: "UTC" });

@@ -119,17 +119,19 @@ ingest shows up red in GitHub Actions instead of passing silently.
 
 ### Scheduled ingest (GitHub Actions)
 
-`.github/workflows/ingest.yml` runs the ingest every 6 hours for up to 5 hours,
-at 2 concurrent HSP calls (the live site keeps the account's other 2). Add
+`.github/workflows/ingest.yml` runs the ingest for up to 5.5 hours at 3
+concurrent HSP calls (the live site keeps the account's last one). A run that
+runs out of time with work still queued starts the next run itself, like the
+Tube status collector, so a backlog is worked through around the clock; a run
+that finishes early ends the chain and the 6-hourly schedule takes over. Add
 these repository secrets (Settings → Secrets and variables → Actions):
 `HSP_EMAIL`, `HSP_PASSWORD`, `DATABASE_URL`.
 
-That schedule relies on the repo being **public**, where Actions minutes are
-free. A private repo gets 2,000 free minutes a month — about one 50-minute run
-a day — so cut the schedule back if the repo goes private. In practice GitHub
-starts only 2–3 of the 4 scheduled runs a day, which is enough to keep every
-route's month-to-date within a day or two now the first fill is done. You can
-start a run by hand from the Actions tab (`minutes` input, up to ~340).
+That relies on the repo being **public**, where Actions minutes are free. A
+private repo gets 2,000 free minutes a month — about one 50-minute run a day —
+so cut the schedule back and drop the chaining if the repo goes private. If
+runs start stopping early on HSP failures, set `HSP_CONCURRENCY` back to 2.
+You can start a run by hand from the Actions tab (`minutes` input, up to ~340).
 
 GitHub disables scheduled workflows in a public repo after 60 days without
 repository activity. Both workflows re-enable themselves and each other at
@@ -197,13 +199,17 @@ punctuality threshold. The ingest asks for 1, 5, 10, 15, 30 and 60 minutes
 - **`hourly_metrics`** — counts per route, month and departure hour. The
   1/10/15/60 columns are NULL on hours stored before November 2026 until the
   detail backfill reaches them.
-- **`service_metrics`** — the same counts per timetabled train (scheduled
-  departure, arrival, operator), replaced whenever its hour is refetched.
-  Drives "train by train" on the route page.
+- **`service_months`** — the same counts per timetabled train (scheduled
+  departure, arrival, operator), packed one row per route-month as JSON keyed
+  by hour; refetching an hour replaces that hour's entry. Drives "train by
+  train" on the route page. (A row per train would be millions of rows once
+  every station has a route — too much for Neon's free 0.5 GB.)
 - **`day_metrics`** — when a month-to-date hour is refreshed, what it gained
   since the previous snapshot is the trains of the days in between. Spans of
   up to a week are kept; a route refreshed daily gives single days. Drives
-  "latest day" on route pages and the network line on the homepage.
+  "latest day" on route pages and the network line on the homepage. Only
+  the last 60 days are kept (the ingest prunes the rest), and station-coverage
+  routes don't collect them.
 
 Average delay switches to the finer buckets automatically: once detail
 coverage reaches 99% (`FINE_DELAY_COVERAGE` in `lib/score.ts`), the ingest
@@ -330,9 +336,30 @@ node scripts/build-stations.mjs
 - Product analytics via `@vercel/analytics` (validates the core MVP question:
   do people care?).
 
+## Station coverage
+
+The curated routes reach about 300 of Britain's ~2,580 stations. So every
+station has a score, `lib/data/coverage-routes.json` gives each of the rest
+one route: its best direct weekday destination, picked from the National Rail
+timetable by `scripts/build-coverage-routes.ts` (most trains 06:00–18:59,
+weighted towards big places and away from journeys over 90 minutes, judged on
+the best of six weekdays so engineering works don't hide a line). The ingest
+fills these at low priority, after the curated and looked-up routes and
+before the detail backfill; quiet routes cost about one short HSP call a
+month. They appear on station pages, in search and on the commuter map, but
+not on the leaderboard.
+
+The timetable comes from the National Rail Data Portal with the same login as
+HSP (subscribe to the Timetable feed). Re-run the script after each timetable
+change (May and December) and commit the JSON:
+
+    node --env-file=.env.local scripts/build-coverage-routes.ts
+
 ## Helper scripts
 
 - `npm run ingest` (`scripts/ingest.ts`) — fill and refresh stored data (see above).
+- `node --env-file=.env.local scripts/build-coverage-routes.ts` — pick each
+  uncovered station's route from the timetable (see Station coverage).
 - `node --env-file=.env.local scripts/db-status.mjs [FROM-TO]` — what's stored.
 - `node scripts/db-test.mjs` — verify the Neon connection.
 - `node scripts/build-stations.mjs` — regenerate the station list.

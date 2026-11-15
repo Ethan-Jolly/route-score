@@ -97,24 +97,18 @@ async function createSchema(): Promise<void> {
       ADD COLUMN IF NOT EXISTS within60 INTEGER
   `);
   // Each timetabled service behind an hour, so a route can be broken down to
-  // "the 07:42". Replaced wholesale whenever its hour is refetched.
+  // "the 07:42". Stored packed, one row per route-month: `services` maps each hour to its
+  // services as [dep, arr, toc, trains, within1, within5, within10, within15,
+  // within30, within60]. A row per service would run to millions of rows
+  // across every station's route; this is tens of thousands. Refetching an
+  // hour replaces just that hour's entry.
   await withRetry(() => sql`
-    CREATE TABLE IF NOT EXISTS service_metrics (
-      from_crs TEXT     NOT NULL,
-      to_crs   TEXT     NOT NULL,
-      period   TEXT     NOT NULL,
-      hour     SMALLINT NOT NULL,
-      dep      TEXT     NOT NULL,
-      arr      TEXT     NOT NULL,
-      toc      TEXT     NOT NULL,
-      trains   INTEGER  NOT NULL,
-      within1  INTEGER  NOT NULL,
-      within5  INTEGER  NOT NULL,
-      within10 INTEGER  NOT NULL,
-      within15 INTEGER  NOT NULL,
-      within30 INTEGER  NOT NULL,
-      within60 INTEGER  NOT NULL,
-      PRIMARY KEY (from_crs, to_crs, period, dep, arr, toc)
+    CREATE TABLE IF NOT EXISTS service_months (
+      from_crs TEXT  NOT NULL,
+      to_crs   TEXT  NOT NULL,
+      period   TEXT  NOT NULL,
+      services JSONB NOT NULL DEFAULT '{}'::jsonb,
+      PRIMARY KEY (from_crs, to_crs, period)
     )
   `);
   // Day-level counts for free: when a month-to-date hour is refreshed, what
@@ -289,21 +283,28 @@ export async function upsertHourRows(
   period: string,
   rows: HourCounts[],
   throughDate: string,
-  final: boolean
+  final: boolean,
+  opts: { dayMetrics?: boolean } = {}
 ): Promise<void> {
   if (rows.length === 0) return;
   const sql = db();
   const col = <K extends keyof HourCounts>(k: K) => rows.map((r) => r[k]);
   const hours = col("hour");
   const withServices = rows.filter((r) => r.serviceList);
-  const services = withServices.flatMap((r) =>
-    r.serviceList!.map((svc) => ({ ...svc, hour: r.hour }))
+  const packed = Object.fromEntries(
+    withServices.map((r) => [
+      r.hour,
+      r.serviceList!.map((v) => [
+        v.dep, v.arr, v.toc, v.trains, v.within1, v.within5, v.within10, v.within15,
+        v.within30, v.within60,
+      ]),
+    ])
   );
-  const svcCol = <K extends keyof (typeof services)[number]>(k: K) => services.map((x) => x[k]);
   const monthStart = `${period}-01`;
 
-  const queries = [
-    sql`
+  const queries: ReturnType<typeof sql>[] = [];
+  if (opts.dayMetrics !== false) {
+    queries.push(sql`
       INSERT INTO day_metrics
         (from_crs, to_crs, hour, from_date, to_date, trains, within5, within15, within30)
       SELECT ${from}, ${to}, d.hour, d.span_start, ${throughDate}::date,
@@ -339,8 +340,9 @@ export async function upsertHourRows(
         within5 = EXCLUDED.within5,
         within15 = EXCLUDED.within15,
         within30 = EXCLUDED.within30
-    `,
-    sql`
+    `);
+  }
+  queries.push(sql`
       INSERT INTO hourly_metrics
         (from_crs, to_crs, period, hour, trains, within1, within5, within10, within15,
          within30, within60, services, toc_codes, journey_mins, through_date, final,
@@ -376,44 +378,13 @@ export async function upsertHourRows(
         through_date = EXCLUDED.through_date,
         final = EXCLUDED.final,
         fetched_at = now()
-    `,
-  ];
+    `);
   if (withServices.length > 0) {
     queries.push(sql`
-      DELETE FROM service_metrics
-      WHERE from_crs = ${from} AND to_crs = ${to} AND period = ${period}
-        AND hour = ANY(${withServices.map((r) => r.hour)}::smallint[])
-    `);
-  }
-  if (services.length > 0) {
-    queries.push(sql`
-      INSERT INTO service_metrics
-        (from_crs, to_crs, period, hour, dep, arr, toc, trains,
-         within1, within5, within10, within15, within30, within60)
-      SELECT ${from}, ${to}, ${period}, t.*
-      FROM unnest(
-        ${svcCol("hour")}::smallint[],
-        ${svcCol("dep")}::text[],
-        ${svcCol("arr")}::text[],
-        ${svcCol("toc")}::text[],
-        ${svcCol("trains")}::int[],
-        ${svcCol("within1")}::int[],
-        ${svcCol("within5")}::int[],
-        ${svcCol("within10")}::int[],
-        ${svcCol("within15")}::int[],
-        ${svcCol("within30")}::int[],
-        ${svcCol("within60")}::int[]
-      ) AS t(hour, dep, arr, toc, trains, within1, within5, within10, within15,
-             within30, within60)
-      ON CONFLICT (from_crs, to_crs, period, dep, arr, toc) DO UPDATE SET
-        hour = EXCLUDED.hour,
-        trains = EXCLUDED.trains,
-        within1 = EXCLUDED.within1,
-        within5 = EXCLUDED.within5,
-        within10 = EXCLUDED.within10,
-        within15 = EXCLUDED.within15,
-        within30 = EXCLUDED.within30,
-        within60 = EXCLUDED.within60
+      INSERT INTO service_months (from_crs, to_crs, period, services)
+      VALUES (${from}, ${to}, ${period}, ${JSON.stringify(packed)}::jsonb)
+      ON CONFLICT (from_crs, to_crs, period) DO UPDATE SET
+        services = service_months.services || EXCLUDED.services
     `);
   }
   await withRetry(() => sql.transaction(queries));
@@ -563,25 +534,48 @@ export async function getServiceRows(
   const sql = db();
   const rows = (await withRetry(
     () => sql`
-      SELECT * FROM service_metrics
-      WHERE from_crs = ${from} AND to_crs = ${to}
-        AND period = ANY(${periods}) AND hour = ANY(${hours})
+      SELECT period, services FROM service_months
+      WHERE from_crs = ${from} AND to_crs = ${to} AND period = ANY(${periods})
     `
-  )) as Record<string, unknown>[];
-  return rows.map((r) => ({
-    period: r.period as string,
-    hour: Number(r.hour),
-    dep: r.dep as string,
-    arr: r.arr as string,
-    toc: r.toc as string,
-    trains: Number(r.trains),
-    within1: Number(r.within1),
-    within5: Number(r.within5),
-    within10: Number(r.within10),
-    within15: Number(r.within15),
-    within30: Number(r.within30),
-    within60: Number(r.within60),
-  }));
+  )) as { period: string; services: Record<string, (string | number)[][]> }[];
+  const out: ServiceRow[] = [];
+  for (const r of rows) {
+    for (const hour of hours) {
+      for (const v of r.services[hour] ?? []) {
+        out.push({
+          period: r.period,
+          hour,
+          dep: String(v[0]),
+          arr: String(v[1]),
+          toc: String(v[2]),
+          trains: Number(v[3]),
+          within1: Number(v[4]),
+          within5: Number(v[5]),
+          within10: Number(v[6]),
+          within15: Number(v[7]),
+          within30: Number(v[8]),
+          within60: Number(v[9]),
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/** Drop day spans older than `days`: "latest day" only looks back a couple
+ * of months, and a row per route, hour and day would otherwise grow without
+ * end. */
+export async function pruneDayMetrics(days: number): Promise<number> {
+  const sql = db();
+  const rows = (await withRetry(
+    () => sql`
+      WITH gone AS (
+        DELETE FROM day_metrics WHERE to_date < CURRENT_DATE - ${days}::int RETURNING 1
+      )
+      SELECT COUNT(*)::int AS n FROM gone
+    `
+  )) as { n: number }[];
+  return rows[0]?.n ?? 0;
 }
 
 /** Day spans of a route's chosen hours, summed across those hours. A span is

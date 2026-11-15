@@ -113,7 +113,7 @@ function RouteList({
   routes: OperatorRoute[];
 }) {
   return (
-    <section>
+    <section className="min-w-0">
       <h2 className={`mb-3 text-lg font-bold ${accent}`}>{title}</h2>
       <ol className="space-y-2">
         {routes.map((r) => (
