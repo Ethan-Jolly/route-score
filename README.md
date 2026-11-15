@@ -102,6 +102,13 @@ Each run works in this order:
    just-ended months, stalest first.
 4. **Fill** — curated routes still missing months, newest six months first (so
    a route reaches the leaderboard sooner), then the older six.
+5. **Backfill** — hours stored before `journey_mins` existed (fetched before
+   5 October 2026), fetched again so they have a journey time. Only uses time
+   the steps above leave over.
+
+A month that has ended is fetched once more after its last day so it can be
+marked `final`, even if the last fetch already ran to its final date (HSP is
+about a day behind, so a fetch on the 1st may be missing the last day).
 
 While there is still curated filling to do, steps 2 and 3 are each capped at a
 share of the run (40% and 30% of what's left) so they can't starve it.
@@ -118,10 +125,15 @@ these repository secrets (Settings → Secrets and variables → Actions):
 
 That schedule relies on the repo being **public**, where Actions minutes are
 free. A private repo gets 2,000 free minutes a month — about one 50-minute run
-a day — so cut the schedule back if the repo goes private. GitHub also pauses
-scheduled workflows in a public repo after 60 days without a commit; re-enable
-it from the Actions tab. You can start a run by hand there too (`minutes`
-input, up to ~340).
+a day — so cut the schedule back if the repo goes private. In practice GitHub
+starts only 2–3 of the 4 scheduled runs a day, which is enough to keep every
+route's month-to-date within a day or two now the first fill is done. You can
+start a run by hand from the Actions tab (`minutes` input, up to ~340).
+
+GitHub disables scheduled workflows in a public repo after 60 days without
+repository activity. Both workflows re-enable themselves and each other at
+the start of every run, which resets that clock, so they keep going between
+commits. If one does get disabled, re-enable it from the Actions tab.
 
 **Scale.** The curated universe is ~1,100 routes × 12 months. A route-month
 costs about 1.3s per timetabled service: roughly a minute for a quiet
@@ -163,10 +175,13 @@ npm run tfl-status -- --once            # one poll
 npm run build:tube-stations             # rebuild lib/data/tube-stations.json
 ```
 
-`.github/workflows/tfl-status.yml` runs the collector hourly (about 24 hours of
-runner time a day, free on a public repo). It needs the `TFL_APP_KEY` and
+`.github/workflows/tfl-status.yml` runs the collector continuously (about 24
+hours of runner time a day, free on a public repo): each run polls for just
+under six hours and then starts the next one itself, with a 6-hourly schedule
+as a fallback if the chain breaks. Hourly scheduled runs were tried first, but
+GitHub only started 3–5 of them a day. It needs the `TFL_APP_KEY` and
 `DATABASE_URL` repository secrets. A run that starts late or is skipped just
-leaves fewer samples for that hour.
+leaves fewer samples for those hours.
 
 `lib/data/tube-stations.json` holds every Tube station and the mainline
 stations within 400 m of one, matched to CRS codes by name. Rebuild it when

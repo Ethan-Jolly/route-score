@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { after } from "next/server";
 import type { Metadata } from "next";
 import { ScoreDial } from "@/components/ScoreDial";
 import { TrendBadge, TrendChart } from "@/components/TrendChart";
@@ -7,7 +8,12 @@ import { MetricBar } from "@/components/MetricBar";
 import { CopyLinkButton } from "@/components/CopyLinkButton";
 import { NoServiceCard } from "@/components/NoServiceCard";
 import { RouteFilling, RouteWarming } from "@/components/RouteWarming";
-import { getCachedRouteScore, parseRouteSlug, routeSlug } from "@/lib/provider";
+import {
+  getCachedRouteScore,
+  parseRouteSlug,
+  recordRouteView,
+  routeSlug,
+} from "@/lib/provider";
 import { stationByCrs } from "@/lib/stations";
 import {
   BAND_LABELS,
@@ -83,6 +89,8 @@ async function storedFallback(
 export default async function RoutePage(props: Props) {
   const r = await resolveRoute(props);
   if (!r.ok) notFound();
+  const { from, to, band } = r;
+  after(() => recordRouteView(from.crs, to.crs, band));
   const fallback = r.result ? null : await storedFallback(r.from.crs, r.to.crs, r.band);
   if (!r.result && !fallback) {
     return <RouteWarming from={r.from} to={r.to} band={r.band} />;
