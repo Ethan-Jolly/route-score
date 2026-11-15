@@ -310,6 +310,31 @@ export async function getServiceHint(
   return new Map(rows.map((r) => [Number(r.hour), Number(r.services)]));
 }
 
+/** Hours with trains but no timetabled journey time because they were stored
+ * before `journey_mins` existed (fetched before `before`). Final months are
+ * never refreshed, so these stay NULL until fetched again on purpose. */
+export async function getUntimedHours(
+  periods: string[],
+  before: string
+): Promise<{ from: string; to: string; period: string; hours: number[] }[]> {
+  const sql = db();
+  const rows = (await withRetry(
+    () => sql`
+      SELECT from_crs, to_crs, period, ARRAY_AGG(hour ORDER BY hour) AS hours
+      FROM hourly_metrics
+      WHERE period = ANY(${periods}) AND trains > 0 AND journey_mins IS NULL
+        AND fetched_at < ${before}::timestamptz
+      GROUP BY from_crs, to_crs, period
+    `
+  )) as Record<string, unknown>[];
+  return rows.map((r) => ({
+    from: r.from_crs as string,
+    to: r.to_crs as string,
+    period: r.period as string,
+    hours: (r.hours as number[]).map(Number),
+  }));
+}
+
 /** Fire-and-forget popularity counter; the ingest keeps looked-up routes fresh. */
 export async function recordLookup(
   from: string,

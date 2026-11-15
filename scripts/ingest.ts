@@ -24,13 +24,15 @@
 //   3. Refresh — leaderboard routes' month-to-date and just-ended months.
 //   4. Fill — curated routes still missing months (newest six months first,
 //      so a route reaches the leaderboard sooner, then the older six).
+//   5. Backfill — hours stored before journey times were, fetched again so
+//      they have one. Only ever uses time the steps above didn't need.
 // While there is still curated filling to do, steps 2 and 3 are each capped
 // at a share of the run so they can't starve it.
 
 import { appendFileSync } from "node:fs";
 import { CURATED_ROUTES } from "../lib/routes.ts";
 import { BAND_HOURS, STORED_HOURS, last12Months } from "../lib/score.ts";
-import { currentMonth, periodRange, yesterday } from "../lib/periods.ts";
+import { currentMonth, periodRange, yesterday, type PeriodRange } from "../lib/periods.ts";
 import { fetchHspHours, hspConfigured } from "../lib/hsp.ts";
 import {
   dbConfigured,
@@ -39,6 +41,7 @@ import {
   getHourRows,
   getPopularRoutes,
   getServiceHint,
+  getUntimedHours,
   upsertHourRows,
 } from "../lib/db.ts";
 
@@ -92,6 +95,12 @@ const curated = ONLY
 
 // ---- Plan ------------------------------------------------------------------
 
+/** Whether a stored, non-final snapshot needs fetching again: the month has
+ * moved on since, or it has ended. A month last fetched on the 1st already
+ * runs to its last day but isn't final — HSP is about a day behind, so that
+ * day may be incomplete — and without the second test it would stay that way. */
+const behind = (through: string, range: PeriodRange) => range.final || through < range.to;
+
 /** How far behind the other bands' hours of a looked-up route may fall before
  * they are refreshed (the requested bands are refreshed daily). */
 const REST_REFRESH_DAYS = 7;
@@ -127,8 +136,8 @@ async function planLookups(): Promise<{ band: Task[]; rest: Task[] }> {
         const have = stored.get(`${period}|${hour}`);
         if (have?.final) continue;
         if (bandHours.has(hour)) {
-          if (!have || have.through < range.to) wantBand.push(hour);
-        } else if (!have || (have.through < range.to && have.through < restCutoff)) {
+          if (!have || behind(have.through, range)) wantBand.push(hour);
+        } else if (!have || range.final || (have.through < range.to && have.through < restCutoff)) {
           wantRest.push(hour);
         }
       }
@@ -159,7 +168,7 @@ function planRefresh(): Task[] {
         c &&
         c.hours === ALL_HOURS.length &&
         c.finalHours < c.hours &&
-        c.through < range.to
+        behind(c.through, range)
       ) {
         stale.push({ from: r.from, to: r.to, period, hours: ALL_HOURS, through: c.through });
       }
@@ -182,10 +191,24 @@ function planFill(months: string[]): Task[] {
   return tasks;
 }
 
+/** When hourly_metrics.journey_mins was added (f23133f); hours fetched before
+ * then have counts but no journey time. */
+const JOURNEY_MINS_ADDED = "2026-10-05T00:00:00Z";
+
+/** 5. Backfill: hours of finished months stored before journey times were,
+ * fetched again so every month counts towards the expected journey time. */
+async function planBackfill(): Promise<Task[]> {
+  if (ONLY) return [];
+  return (await getUntimedHours(closed, JOURNEY_MINS_ADDED))
+    .map((r) => ({ ...r, tag: "journey" }))
+    .sort((a, b) => b.period.localeCompare(a.period));
+}
+
 const lookups = await planLookups();
 const refresh = planRefresh();
 const fillRecent = planFill(newestFirst.slice(0, LEADERBOARD_MONTHS));
 const fillOlder = planFill(newestFirst.slice(LEADERBOARD_MONTHS));
+const backfill = await planBackfill();
 
 console.log(
   `Ingest: ${curated.length} curated routes, window ${periods[0]}..${periods.at(-1)}, ` +
@@ -194,7 +217,8 @@ console.log(
 console.log(
   `Plan: ${lookups.band.length} looked-up (requested bands), ` +
     `${lookups.rest.length} looked-up (other bands), ${refresh.length} refresh, ` +
-    `${fillRecent.length} fill (recent 6 months), ${fillOlder.length} fill (older 6 months) route-months`
+    `${fillRecent.length} fill (recent 6 months), ${fillOlder.length} fill (older 6 months), ` +
+    `${backfill.length} journey-time backfill route-months`
 );
 if (DRY_RUN) process.exit(0);
 
@@ -279,6 +303,7 @@ await runPhase("Fill (recent 6 months)", fillRecent, endAt);
 await runPhase("Fill (older 6 months)", fillOlder, endAt);
 await runPhase("Looked-up routes (other bands, remaining)", lookups.rest, endAt);
 await runPhase("Refresh (remaining)", refresh, endAt);
+await runPhase("Backfill journey times", backfill, endAt);
 
 // ---- Report ----------------------------------------------------------------
 

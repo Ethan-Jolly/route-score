@@ -2,21 +2,32 @@ name: Tube status
 
 # Polls TfL line status every two minutes and counts it per line and hour, to
 # build the history a Tube leg's reliability is worked out from (TfL publishes
-# none). Each run polls for 55 minutes; a run that starts late or is skipped
-# just leaves fewer samples for that hour, which the figures allow for.
+# none). A run that starts late or is skipped just leaves fewer samples for
+# those hours, which the figures allow for.
+#
+# Each run polls for just under six hours (GitHub's job limit) and then starts
+# the next run itself, so polling is continuous. Hourly cron runs were tried
+# first, but GitHub only started 3–5 of the 24 a day, leaving ~15% of hours
+# sampled. The 6-hourly schedule is now only a fallback, restarting the chain
+# if a run fails or is cancelled. While one run is going the next waits in the
+# concurrency group; GitHub keeps one waiting run and cancels any older one,
+# so the chain and the schedule never stack up.
 #
 # Like the ingest, this relies on the repo being public for free minutes
-# (about 24 hours of runner time a day). GitHub pauses scheduled workflows
-# after 60 days with no commits; re-enable from the Actions tab.
+# (about 24 hours of runner time a day).
 
 on:
   schedule:
-    - cron: "4 * * * *" # hourly (off the hour: scheduled runs start more reliably)
+    - cron: "4 */6 * * *" # fallback only (off the hour: scheduled runs start more reliably)
   workflow_dispatch:
     inputs:
       minutes:
         description: "How long to poll for"
-        default: "55"
+        default: "345"
+
+permissions:
+  contents: read
+  actions: write # start the next run, and keep both schedules enabled
 
 concurrency:
   group: tfl-status
@@ -25,7 +36,9 @@ concurrency:
 jobs:
   poll:
     runs-on: ubuntu-latest
-    timeout-minutes: 65
+    timeout-minutes: 355
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -33,10 +46,23 @@ jobs:
           node-version: 22 # runs the TypeScript script directly (needs >= 22.18)
           cache: npm
       - run: npm ci
+      # GitHub disables scheduled workflows in a public repo after 60 days with
+      # no repository activity. Re-enabling one resets that clock, so the
+      # collectors keep running however long it is between commits.
+      - name: Keep schedules enabled
+        continue-on-error: true
+        run: |
+          for wf in tfl-status.yml ingest.yml; do
+            gh api -X PUT "repos/${{ github.repository }}/actions/workflows/$wf/enable"
+          done
       - name: Poll
         env:
           # Set in repo Settings → Secrets and variables → Actions.
           TFL_APP_KEY: ${{ secrets.TFL_APP_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          MINUTES: ${{ inputs.minutes || '55' }}
+          MINUTES: ${{ inputs.minutes || '345' }}
         run: node scripts/tfl-status.ts --minutes="$MINUTES"
+      # Only after a successful poll: a broken run (bad secret, TfL down)
+      # mustn't loop, so failures wait for the fallback schedule instead.
+      - name: Start the next run
+        run: gh workflow run tfl-status.yml --repo "${{ github.repository }}" --ref "${{ github.ref_name }}"

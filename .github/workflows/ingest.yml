@@ -11,8 +11,12 @@ name: Route Score ingest
 # If the repo is ever made private again, cut this back to one 50-minute run a
 # day (a private repo gets 2,000 free minutes a month).
 #
-# Note: GitHub pauses scheduled workflows in a public repo after 60 days with
-# no commits. It emails first; re-enable from the Actions tab.
+# In practice GitHub starts only 2–3 of the 4 scheduled runs a day (about
+# 10 hours of ingest). Since the first fill finished that's enough to keep
+# every route's month-to-date within a day or two.
+#
+# GitHub disables scheduled workflows in a public repo after 60 days with no
+# repository activity; the "Keep schedules enabled" step resets that clock.
 
 on:
   schedule:
@@ -22,6 +26,10 @@ on:
       minutes:
         description: "How long to ingest for"
         default: "300"
+
+permissions:
+  contents: read
+  actions: write # keep both schedules enabled
 
 # Never run two ingests at once — they'd fight over HSP's ~4-call limit. A run
 # that is still going when the next is due makes the next one wait.
@@ -40,6 +48,14 @@ jobs:
           node-version: 22 # runs the TypeScript script directly (needs >= 22.18)
           cache: npm
       - run: npm ci
+      - name: Keep schedules enabled
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for wf in ingest.yml tfl-status.yml; do
+            gh api -X PUT "repos/${{ github.repository }}/actions/workflows/$wf/enable"
+          done
       - name: Ingest
         env:
           # Set in repo Settings → Secrets and variables → Actions.

@@ -215,12 +215,32 @@ export async function getRouteScore(
 
   await ensureSchema();
   let state = await loadRoute(from, to, band);
+  if (state.ready) recordLookup(from.crs, to.crs, band).catch(() => {});
   if (!state.ready) {
     const progress = await fillStep(from, to, band, state);
     state = await loadRoute(from, to, band);
     if (!state.ready) return { warming: progress };
   }
   return assembleState(from, to, band, state) ?? { warming: progressOf(state, false) };
+}
+
+/**
+ * Count a view of a route page. Stored routes never reach fillStep, so without
+ * this the ingest's looked-up-routes priority (and route_lookups as a record
+ * of demand) would only ever see routes that weren't stored yet.
+ */
+export async function recordRouteView(
+  fromCrs: string,
+  toCrs: string,
+  band: TimeBand
+): Promise<void> {
+  if (!hspConfigured() || !dbConfigured()) return;
+  try {
+    await ensureSchema();
+    await recordLookup(fromCrs, toCrs, band);
+  } catch {
+    // A missed count is harmless; never let it surface.
+  }
 }
 
 /**

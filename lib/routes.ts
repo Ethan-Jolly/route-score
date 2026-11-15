@@ -47,21 +47,25 @@ export const LONDON_TERMINALS: Record<string, string> = {
  * Real destinations reachable by direct train from each London terminal.
  * Curated to keep the HSP hit-rate high (dead pairs waste the rate-limited
  * budget). Not exhaustive — a representative spread of each terminal's lines.
+ * Checked against a year of stored HSP data (November 2026): pairs that had no
+ * trains at all were either a mistyped CRS code (fixed) or no direct service
+ * (removed). validate-routes only catches codes that don't exist, not codes
+ * that are some other station.
  */
 const LONDON_DESTINATIONS: Record<string, string[]> = {
   // South Western Railway
   WAT: [
     "WOK", "GLD", "BSK", "WIN", "SOU", "BMH", "POO", "WEY", "PMS", "PMH",
-    "HAV", "EPS", "DOR", "SUR", "KNG", "RMD", "TWI", "SNS", "RDG", "FNB",
-    "AON", "SAL", "EXD", "YVJ", "AND", "FLE", "HMC", "SHP", "WNR", "AHT",
-    "ACT", "CSS", "FEL", "GUI", "HSL", "WVF", "MOT", "BSW",
+    "HAV", "EPS", "DKG", "SUR", "KNG", "RMD", "TWI", "SNS", "RDG", "FNB",
+    "AON", "SAL", "EXD", "YVJ", "ADV", "FLE", "HMC", "SHP", "WNR", "AHT",
+    "ACT", "CSS", "FEL", "HSL", "MOT",
   ],
   // Southern / Gatwick Express / Southeastern (Victoria)
   VIC: [
     "BTN", "GTW", "ECR", "SUO", "EPS", "DKG", "HRH", "LIT", "BOG", "CCH",
     "WRH", "HOV", "LWS", "EBN", "HGS", "BMS", "ORP", "SEV", "AFK", "CBW",
     "DVP", "RAM", "MDE", "TON", "TBW", "RDH", "REI", "CAT", "PUR", "HSK",
-    "BAA", "GRV", "CHM",
+    "BAA", "GRV", "CTM",
   ],
   // Southeastern / Southern / Thameslink (London Bridge)
   LBG: [
@@ -71,29 +75,29 @@ const LONDON_DESTINATIONS: Record<string, string[]> = {
   // Southeastern (Charing Cross)
   CHX: [
     "DFD", "GRV", "GLM", "SEV", "TON", "TBW", "HGS", "AFK", "ORP", "HYS",
-    "GNW", "LEW", "WWA", "BXH", "SID", "GLM", "PMR", "MDW", "PNW",
+    "GNW", "LEW", "WWA", "BXH", "SID", "GLM", "PMR", "PDW",
   ],
   // Southeastern (Cannon Street)
   CST: ["DFD", "GLM", "GRV", "ORP", "SEV", "HYS", "LEW", "GNW", "BXH", "SID"],
   // Greater Anglia / Elizabeth (Liverpool Street)
   LST: [
     "NRW", "IPS", "COL", "CHM", "SNF", "CLT", "HWC", "CBG", "SSD", "BIS",
-    "HFE", "CHN", "BTR", "WTM", "MNG", "SRA", "RMF", "SOV", "HWN", "ROM",
-    "GDP", "AUR", "MRN",
+    "HFE", "CHN", "BTR", "WTM", "MNG", "SRA", "RMF", "SOV", "HWN",
+    "GDP", "AUD",
   ],
   // c2c (Fenchurch Street)
-  FST: ["SOC", "SRY", "BSO", "GRY", "TIL", "UPM", "BKG", "PIT", "BEF", "LES", "LTS"],
+  FST: ["SOC", "SRY", "BSO", "GRY", "TIL", "UPM", "BKG", "PSE", "BEF", "LES"],
   // Great Northern (Moorgate)
-  MOG: ["WGC", "HFN", "SVG", "HIT", "LET", "GDN", "FPK", "OLD", "AAP", "HAT", "WLW"],
+  MOG: ["WGC", "HFN", "SVG", "GDH", "FPK", "OLD", "AAP", "HAT"],
   // LNER / Great Northern / Grand Central / Hull / Lumo (Kings Cross)
   KGX: [
     "EDB", "YRK", "NCL", "LDS", "PBO", "DON", "DAR", "GRA", "NNG", "RET",
-    "WKF", "HUL", "LCN", "SVG", "CBG", "KLN", "ELY", "DUR", "NBA", "HGT",
+    "WKF", "HUL", "LCN", "SVG", "CBG", "KLN", "ELY", "DHM", "NBA", "HGT",
     "HUN", "SDY", "ALM",
   ],
   // East Midlands Railway / Thameslink / Southeastern HS1 (St Pancras)
   STP: [
-    "LEI", "NOT", "DBY", "SHF", "LUT", "BDM", "COH", "KET", "WEL", "MHR",
+    "LEI", "NOT", "DBY", "SHF", "LUT", "BDM", "COR", "KET", "WEL", "MHR",
     "LBO", "CHD", "AFK", "EBD", "GTW", "BTN", "CBG", "STP", "LTN", "MAR",
   ],
   // Avanti West Coast / London Northwestern / Southern (Euston)
@@ -106,12 +110,12 @@ const LONDON_DESTINATIONS: Record<string, string[]> = {
   PAD: [
     "RDG", "OXF", "SWI", "BRI", "BPW", "BTH", "CDF", "SWA", "NWP", "CNM",
     "GCR", "EXD", "PLY", "PNZ", "TRU", "TAU", "NBY", "DID", "SLO", "MAI",
-    "TWY", "HFD", "WOS", "WSM", "TOT", "BPN", "CPM", "KEM",
+    "TWY", "HFD", "WOS", "WSM", "TOT", "CPM", "KEM",
   ],
   // Chiltern Railways (Marylebone)
   MYB: [
-    "BMO", "BAN", "BCS", "HWY", "AYS", "OXF", "STR", "WRW", "LMS", "SOL",
-    "GER", "AMR", "PRP", "BSW", "HDM",
+    "BMO", "BAN", "BCS", "HWY", "AYS", "OXF", "SAV", "WRW", "LMS", "SOL",
+    "GER", "AMR", "PRR", "BSW", "HDM",
   ],
   // Thameslink (Blackfriars)
   BFR: ["GTW", "BTN", "LUT", "BDM", "SVG", "SAC", "ELS", "RDH", "GTW", "SUO"],
@@ -160,28 +164,30 @@ const INTERCITY: Record<string, string[]> = {
   BRI: ["CDF", "BHM", "EXD", "PLY", "RDG", "GCR", "TAU", "NWP", "BTH", "SOU", "PNZ"],
   LDS: ["MAN", "YRK", "SHF", "NCL", "BDQ", "HUL", "HGT", "DON", "NOT", "BHM", "CAR"],
   EDB: ["GLC", "ABD", "DEE", "INV", "PTH", "STG", "NCL", "YRK", "CAR", "DUN", "FKK"],
-  GLC: ["EDB", "ABD", "DEE", "INV", "PTH", "STG", "CAR", "AYR", "PYG"],
+  GLC: ["EDB", "CAR", "AYR", "PYG"],
+  // Trains north of the Central Belt leave from Queen Street, not Central.
+  GLQ: ["EDB", "ABD", "DEE", "INV", "PTH", "STG"],
   CDF: ["SWA", "BRI", "NWP", "BHM", "GCR", "CNM", "HFD"],
   NCL: ["EDB", "YRK", "LDS", "DHM", "MBR", "SUN", "CAR", "MAN"],
   LIV: ["MAN", "PRE", "LDS", "BHM", "WGN", "CTR", "MCV"],
   SHF: ["LDS", "MAN", "NOT", "DBY", "BHM", "DON", "LEI", "YRK"],
   NOT: ["DBY", "LEI", "SHF", "BHM", "LCN"],
   SOU: ["BMH", "PMS", "RDG", "WIN", "SAL", "BTN", "POO", "WEY"],
-  BTN: ["PMS", "SOU", "AFK", "HGS", "GTW", "EBN", "WRH"],
+  BTN: ["PMS", "SOU", "HGS", "GTW", "EBN", "WRH"],
   YRK: ["NCL", "LDS", "MAN", "SHF", "DON", "SCA", "HUL"],
   PRE: ["MAN", "LIV", "LAN", "BPN", "CAR", "WGN"],
-  EXD: ["PLY", "BRI", "TAU", "PNZ", "TRU", "BPN", "PGN"],
+  EXD: ["PLY", "BRI", "TAU", "PNZ", "TRU", "PGN"],
   RDG: ["OXF", "BSK", "GLD", "NBY", "DID", "RDH", "BRI", "SOU", "GTW", "WKM", "BCE"],
   LEI: ["DBY", "NUN", "PBO", "STP", "SHF", "BHM", "NOT"],
   DBY: ["NOT", "SHF", "BHM", "CRE", "LEI"],
   COV: ["RUG", "BHM", "NMP", "BHI", "MKC", "WVH"],
-  WVH: ["BHM", "STA", "CRE", "WOS", "SHR"],
+  WVH: ["BHM", "STA", "CRE", "SHR"],
   GLD: ["RDG", "RDH", "GTW", "BSK"],
   MKC: ["BHM", "NMP", "RUG", "CRE", "STA"],
   TAU: ["EXD", "BRI", "PLY"],
   SHR: ["WVH", "BHM", "CTR"],
   NWP: ["CDF", "BRI", "GCR"],
-  CBG: ["PBO", "ELY", "BSE", "NMK", "HUN", "SDY", "IPS", "NRW"],
+  CBG: ["PBO", "ELY", "BSE", "NMK", "IPS", "NRW"],
   PBO: ["ELY", "GRA", "SPA", "DON", "LEI", "LDS"],
   IPS: ["LWT", "FLX", "BSE", "SMK", "COL", "NRW"],
   NRW: ["GYM", "LWT", "DIS", "WMD", "TTF", "COL"],
@@ -189,10 +195,10 @@ const INTERCITY: Record<string, string[]> = {
   CAR: ["PNR", "OXN", "LAN", "PRE", "NCL"],
   ABD: ["DEE", "STN", "MTS", "INV", "PTH"],
   INV: ["AVM", "PTH", "DIN", "NRN"],
-  PLY: ["TOT", "LSK", "BOD", "TRU", "PNZ", "PGN", "NTA"],
+  PLY: ["TOT", "LSK", "BOD", "TRU", "PNZ", "NTA"],
   MBR: ["DAR", "NCL", "YRK", "SLB", "DHM"],
   HUL: ["SBY", "BEV", "YRK", "DON"],
-  CNM: ["GCR", "WOS", "HFD", "BHM"],
+  CNM: ["GCR", "WOS", "BHM"],
   CTR: ["CRE", "WBQ", "LIV", "WRX"],
 };
 
